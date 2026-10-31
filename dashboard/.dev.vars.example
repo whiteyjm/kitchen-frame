@@ -16,3 +16,7 @@ TODOIST_TOKEN=""
 # ALBUM_URL="https://photos.icloud.com/shared/album/<token>"
 # Optional: token AI agents use to post messages and save recipes (any long random string).
 # AGENT_TOKEN=""
+# Coles store number from the store page URL (…/marrickville-4166 → 4166). Defaults to 0584.
+# COLES_STORE_ID="0584"
+# Optional override if Coles rotates the public website subscription key.
+# COLES_SUBSCRIPTION_KEY=""

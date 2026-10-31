@@ -1,7 +1,9 @@
 <script>
   import Icon from '../components/Icon.svelte';
   import TaskRow from '../components/TaskRow.svelte';
-  import { clock, lists, completeItem, addItem } from '../lib/state.svelte.js';
+  import ProductPicker from '../components/ProductPicker.svelte';
+  import { clock, lists, completeItem, addItem, updateItem } from '../lib/state.svelte.js';
+  import { productTitle, productDescription } from '../../shared/product.js';
   // board: Tasks, one card per Todoist section. Otherwise (Groceries) one card, items in columns,
   // grouped under section names when the project has sections.
   let { name, title, accent, accentText, board = false } = $props();
@@ -29,18 +31,42 @@
   let note = $derived(list.error && /TODOIST_TOKEN/.test(list.error) ? 'Todoist isn’t connected yet.' : list.error);
 
   // Adding: the field only appears after tapping Add, and stays open for several in a row.
+  // On Groceries, resolving is an existing line being matched to a supermarket product.
   let adding = $state(false);
   let draft = $state('');
   let saving = $state(false);
+  let resolving = $state(null);
   let field = $state(null);
-  function openAdd() { adding = true; requestAnimationFrame(() => field && field.focus()); }
+  function openAdd() { resolving = null; adding = true; requestAnimationFrame(() => field && field.focus()); }
+  function closeAdd() { adding = false; draft = ''; resolving = null; }
+  function openResolve(item) {
+    resolving = item;
+    draft = item.content;
+    adding = true;
+    requestAnimationFrame(() => field && field.focus());
+  }
   async function submit(e) {
     e.preventDefault();
+    if (resolving) return;
     const text = draft.trim();
     if (!text || saving) return;
     saving = true;
     if (await addItem(name, text)) draft = '';
     saving = false;
+    field && field.focus();
+  }
+  async function choose(product) {
+    if (saving) return;
+    const content = productTitle(product);
+    const description = productDescription(product, resolving ? resolving.note : '');
+    saving = true;
+    const ok = resolving
+      ? await updateItem(name, resolving, content, description)
+      : await addItem(name, content, description);
+    saving = false;
+    if (!ok) return;
+    draft = '';
+    resolving = null;
     field && field.focus();
   }
 </script>
@@ -51,8 +77,8 @@
       <form class="add" onsubmit={submit}>
         <span class="plus"><Icon name="plus" size={18} /></span>
         <input bind:this={field} bind:value={draft} placeholder={name === 'todo' ? 'New task' : 'Add to groceries'} enterkeyhint="done" autocomplete="off" aria-label={'Add to ' + title} />
-        <button class="btn solid" disabled={!draft.trim() || saving}>Add</button>
-        <button type="button" class="btn" onclick={() => { adding = false; draft = ''; }}>Done</button>
+        {#if !resolving}<button class="btn solid" disabled={!draft.trim() || saving}>Add</button>{/if}
+        <button type="button" class="btn" onclick={closeAdd}>Done</button>
       </form>
     {:else}
       <h1>{list.project || title}<span class="count">{items.length} {items.length === 1 ? noun[0] : noun[1]}</span></h1>
@@ -61,7 +87,10 @@
   </header>
   {#if note}<p class="note">{note}</p>{/if}
 
-  {#if list.items && !items.length}
+  <!-- The picker replaces the list only while there's something to search, so a finished add shows the new line. -->
+  {#if adding && name === 'groceries' && (resolving || draft.trim().length >= 2)}
+    <ProductPicker query={draft} matching={resolving ? resolving.content : ''} {saving} onpick={choose} onplain={submit} />
+  {:else if list.items && !items.length}
     <div class="sheet empty">
       <span class="empty-icon"><Icon name={name === 'todo' ? 'check' : 'cart'} size={34} /></span>
       <h2>{name === 'todo' ? 'All done' : 'Grocery list is empty'}</h2>
@@ -72,7 +101,7 @@
     {#if loose.length}
       <div class="sheet loose" style="--cols:{Math.min(3, Math.max(1, Math.ceil(loose.length / 3)))}">
         {#each loose as item (item.id)}
-          <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} />
+          <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} onpick={name === 'groceries' ? openResolve : undefined} />
         {/each}
       </div>
     {/if}
@@ -83,7 +112,7 @@
           <h2>{g.name}<span class="num">{g.items.length}</span></h2>
           <div class="card-items">
             {#each g.items as item (item.id)}
-              <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} />
+              <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} onpick={name === 'groceries' ? openResolve : undefined} />
             {:else}
               <p class="none">No {noun[1]}</p>
             {/each}
@@ -98,7 +127,7 @@
         <section class="group">
           {#if g.name}<h2>{g.name}</h2>{/if}
           {#each g.items as item (item.id)}
-            <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} />
+            <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} onpick={name === 'groceries' ? openResolve : undefined} />
           {/each}
         </section>
       {/each}

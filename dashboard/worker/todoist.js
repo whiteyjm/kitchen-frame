@@ -1,6 +1,8 @@
 // Grocery and to-do lists from Todoist (API v1), proxied so the token never reaches the frame.
 // Secret: TODOIST_TOKEN (Todoist → Settings → Integrations → Developer → API token).
 // Vars: TODOIST_GROCERY_PROJECT, TODOIST_TODO_PROJECT (project names, default "Groceries" / "To-do").
+import { visibleNote } from '../shared/product.js';
+
 const API = 'https://api.todoist.com/api/v1';
 export const LISTS = { groceries: 'TODOIST_GROCERY_PROJECT', todo: 'TODOIST_TODO_PROJECT' };
 const DEFAULT_NAMES = { groceries: 'Groceries', todo: 'To-do' };
@@ -91,23 +93,31 @@ export function sortTasks(tasks, list) {
       ...(t.due?.date ? { due: t.due.date.slice(0, 10) } : {}),
       ...(t.section_id ? { section: t.section_id } : {}),
       ...(t.responsible_uid ? { assignee: String(t.responsible_uid) } : {}),
-      ...(note(t.description) ? { note: note(t.description) } : {}),
+      ...(visibleNote(t.description) ? { note: visibleNote(t.description) } : {}),
     }));
 }
 
-// The description's first line, kept short, as a small note under the item (e.g. "For: Beef Mandi").
-function note(description) {
-  const line = String(description || '').split('\n').map((l) => l.trim()).find(Boolean) || '';
-  return line.length > 120 ? line.slice(0, 119) + '…' : line;
+function shaped(id, content, description) {
+  const note = visibleNote(description);
+  return { id, content, ...(note ? { note } : {}) };
 }
 
-// description is Todoist's note under the task (e.g. "For: Chicken Fried Rice").
+// description is Todoist's note under the task (e.g. "For: Chicken Fried Rice", or a product line).
 export async function addItem(env, list, content, description) {
   const t = await call(env, '/tasks', {
     method: 'POST',
     body: JSON.stringify({ content, project_id: await projectId(env, list), ...(description ? { description } : {}) }),
   });
-  return { id: t.id, content: t.content };
+  return shaped(t.id, t.content, description);
+}
+
+// Replace the title and note of an existing item (a grocery line matched to a product).
+export async function updateItem(env, id, content, description) {
+  const t = await call(env, '/tasks/' + encodeURIComponent(id), {
+    method: 'POST',
+    body: JSON.stringify({ content, description: description || '' }),
+  });
+  return shaped(t.id, t.content, description);
 }
 
 export async function completeItem(env, id) {
