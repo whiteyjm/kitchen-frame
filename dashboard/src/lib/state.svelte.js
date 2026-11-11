@@ -1,6 +1,7 @@
 // Shared app state and the pollers that fill it. Each feed polls only while something on screen
 // needs it (see start()), one request at a time, and unchanged results don't touch the screen.
 import { api, cached, remember, changed, forget, withKey } from './api.js';
+import { visibleNote } from '../../shared/product.js';
 import { dayKey, recipeTitle } from './format.js';
 import { demoCalendar, demoList, demoMeta } from './demo.js';
 import { ha, announce } from './ha.svelte.js';
@@ -240,16 +241,45 @@ export async function completeItem(name, item) {
   }
 }
 
-export async function addItem(name, content) {
+export async function addItem(name, content, description) {
   const list = lists[name];
-  if (ui.demo) { list.items = [...(list.items || []), { id: 'demo-' + Date.now(), content }]; return true; }
+  const note = visibleNote(description);
+  if (ui.demo) {
+    list.items = [...(list.items || []), { id: 'demo-' + Date.now(), content, ...(note ? { note } : {}) }];
+    return true;
+  }
   try {
-    const item = await api('/api/lists/' + name, { method: 'POST', body: JSON.stringify({ content }) });
+    const item = await api('/api/lists/' + name, { method: 'POST', body: JSON.stringify({ content, ...(description ? { description } : {}) }) });
     list.items = [...(list.items || []), item];
     remember(name, list.items);
     return true;
   } catch (err) {
     list.error = 'Couldn’t add “' + content + '”: ' + err.message;
+    return false;
+  }
+}
+
+// Point an existing grocery line at a chosen product. Demo mode stays on the device.
+export async function updateItem(name, item, content, description) {
+  const list = lists[name];
+  const note = visibleNote(description);
+  const next = { ...item, content };
+  if (note) next.note = note;
+  else delete next.note;
+  const prev = list.items;
+  list.items = (prev || []).map((i) => (i.id === item.id ? next : i));
+  if (ui.demo) return true;
+  try {
+    const saved = await api('/api/lists/' + name + '/' + encodeURIComponent(item.id), {
+      method: 'POST',
+      body: JSON.stringify({ content, description: description || '' }),
+    });
+    list.items = list.items.map((i) => (i.id === item.id ? { ...next, ...saved } : i));
+    remember(name, list.items);
+    return true;
+  } catch (err) {
+    list.items = prev;
+    list.error = 'Couldn’t update “' + item.content + '”: ' + err.message;
     return false;
   }
 }

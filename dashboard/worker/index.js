@@ -1,8 +1,10 @@
 // Serves the dashboard (static assets) and its API:
 //   GET  /api/calendar               merged iCal feeds (cron refreshes them into KV every 10 min)
 //   GET  /api/weather                Open-Meteo current + 5-day (see weather.js)
+//   GET  /api/groceries/search?q=    Woolworths and Coles product search (see groceries.js)
 //   GET  /api/lists/:list            Todoist project tasks, list = groceries | todo (see todoist.js)
 //   POST /api/lists/:list            { content, description? } adds an item, or { items: [...] } several
+//   POST /api/lists/:list/:id        { content, description? } updates an item's title and note
 //   POST /api/lists/:list/:id/done   completes an item
 //   GET  /api/photos                 idle-screen photo list from the iCloud shared album (see photos.js)
 //   GET  /api/photos/:id             one photo, passed through from iCloud
@@ -22,7 +24,8 @@
 // Optional: DISPLAY_TZ  IANA zone for times with no TZID and no X-WR-TIMEZONE (default UTC).
 import { expand, merge } from './calendar.js';
 import { getWeather } from './weather.js';
-import { LISTS, getList, addItem, completeItem } from './todoist.js';
+import { LISTS, getList, addItem, updateItem, completeItem } from './todoist.js';
+import { searchGroceries } from './groceries.js';
 import { listPhotos, photoResponse } from './photos.js';
 import { room } from './messages.js';
 export { MessageRoom } from './messages.js'; // Durable Object class (wrangler.jsonc)
@@ -94,20 +97,30 @@ export default {
       const dismiss = /^\/api\/messages\/([\w-]+)\/dismiss$/.exec(url.pathname);
       if (dismiss && req.method === 'POST') return room(env).fetch('https://room/dismiss/' + dismiss[1], { method: 'POST' });
 
+      if (url.pathname === '/api/groceries/search' && req.method === 'GET') {
+        const found = await searchGroceries(env, url.searchParams.get('q'));
+        if (found.error) return json({ error: found.error }, 400);
+        return json({ query: found.query, products: found.products, errors: found.errors });
+      }
+
       const [, , section, list, id, action] = url.pathname.split('/');
       if (section === 'lists' && list in LISTS) {
         if (!env.TODOIST_TOKEN) return json({ error: 'Add TODOIST_TOKEN to connect Todoist' }, 503);
         if (req.method === 'GET' && !id) return json(await getList(env, list));
+        if (req.method === 'POST' && id && !action) {
+          const one = cleanItem(await req.json());
+          if (!one.content) return json({ error: 'content required' }, 400);
+          return json(await updateItem(env, id, one.content, one.description));
+        }
         if (req.method === 'POST' && !id) {
           const body = await req.json();
-          const clean = (x) => ({ content: String((x && x.content) || '').trim().slice(0, 500), description: String((x && x.description) || '').trim().slice(0, 500) });
           if (Array.isArray(body.items)) {
             // Several at once (recipe ingredients): added in parallel, up to 40.
-            const items = body.items.map(clean).filter((x) => x.content).slice(0, 40);
+            const items = body.items.map(cleanItem).filter((x) => x.content).slice(0, 40);
             if (!items.length) return json({ error: 'items required' }, 400);
             return json({ items: await Promise.all(items.map((x) => addItem(env, list, x.content, x.description))) });
           }
-          const one = clean(body);
+          const one = cleanItem(body);
           if (!one.content) return json({ error: 'content required' }, 400);
           return json(await addItem(env, list, one.content, one.description));
         }
@@ -168,6 +181,10 @@ function authorized(req, env) {
   const url = new URL(req.url);
   const keyInUrl = url.pathname.startsWith('/api/photos/') || url.pathname === '/api/messages/live' || /^\/api\/recipes\/[\w-]+\/image$/.test(url.pathname);
   return req.method === 'GET' && keyInUrl && url.searchParams.get('key') === env.DASHBOARD_KEY;
+}
+
+function cleanItem(x) {
+  return { content: String((x && x.content) || '').trim().slice(0, 500), description: String((x && x.description) || '').trim().slice(0, 500) };
 }
 
 function json(body, status = 200, cache = 'no-store') {

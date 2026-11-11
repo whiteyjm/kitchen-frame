@@ -1,6 +1,7 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from './index.js';
+import { resetGrocerySessions } from './groceries.js';
 import { shape } from './weather.js';
 import { MessageRoom } from './messages.js';
 
@@ -45,6 +46,10 @@ beforeEach(() => {
     }
     if (u.pathname === '/api/v1/tasks' && init.method === 'POST') {
       return Response.json({ id: 'new', content: JSON.parse(init.body).content });
+    }
+    if (/^\/api\/v1\/tasks\/[^/]+$/.test(u.pathname) && init.method === 'POST') {
+      const body = JSON.parse(init.body || '{}');
+      return Response.json({ id: u.pathname.split('/').pop(), content: body.content, description: body.description || '' });
     }
     if (u.pathname === '/api/v1/tasks') return page(tasks[u.searchParams.get('project_id')]);
     if (u.pathname === '/api/v1/sections') return page(u.searchParams.get('project_id') === 'p3' ? [{ id: 's2', name: 'Later', section_order: 2 }, { id: 's1', name: 'Now', section_order: 1 }] : []);
@@ -316,6 +321,49 @@ test('calendar cron writes KV only when events change, or hourly', async () => {
   assert.equal(await run({ updated: ago(90), calendars: 1, errors: [], events: [] }), 1); // unchanged, hourly heartbeat
   assert.equal(await run({ updated: ago(5), calendars: 1, errors: [], events: [{ uid: 'gone' }] }), 1); // changed
   assert.equal(await run(null), 1); // first run
+});
+
+test('grocery search: key, short query, and a normalised product from each store', async () => {
+  resetGrocerySessions();
+  assert.equal((await worker.fetch(new Request('https://frame.test/api/groceries/search?q=milk'), env, {})).status, 401);
+  assert.equal((await req('/api/groceries/search?q=a')).status, 400);
+
+  globalThis.fetch = async (url, init = {}) => {
+    const u = String(url);
+    if (u.includes('woolworths.com.au') && init.method === 'POST') {
+      return Response.json({ Products: [{ Products: [{
+        Stockcode: 888, DisplayName: 'Pura Milk 2L', Brand: 'Pura', PackageSize: '2L', Price: 4.5,
+        CupString: '$2.25 / 1L', SmallImageFile: 'https://cdn0.woolworths.media/content/wowproductimages/small/888.jpg',
+        UrlFriendlyName: 'pura-milk', IsInStock: true,
+      }] }] });
+    }
+    if (u.includes('woolworths.com.au')) return Response.json({});
+    if (u.includes('coles.com.au')) {
+      return Response.json({ results: [
+        { _type: 'SINGLE_TILE', id: 9, name: 'Ad' },
+        { _type: 'PRODUCT', id: 439693, name: 'Full Cream Milk', brand: 'Coles', size: '2L', availability: true, pricing: { now: 3.4, comparable: '$1.70 / 1L' }, imageUris: [{ uri: '/4/439693.jpg' }] },
+      ] });
+    }
+    return new Response('no', { status: 404 });
+  };
+  const body = await (await req('/api/groceries/search?q=' + encodeURIComponent('  2L milk '))).json();
+  assert.equal(body.query, '2L milk');
+  assert.deepEqual(body.products.map((p) => [p.store, p.priceLabel, p.size]), [['woolworths', '$4.50', '2L'], ['coles', '$3.40', '2L']]);
+  assert.equal(body.products[0].url, 'https://www.woolworths.com.au/shop/productdetails/888/pura-milk');
+  assert.equal(body.products[1].image, 'https://cdn.productimages.coles.com.au/productimages/4/439693.jpg');
+  assert.deepEqual(body.errors, []);
+  assert.equal(body.products.some((p) => p.name === 'Ad'), false);
+});
+
+test('updating a grocery item keeps the product note on the task', async () => {
+  const description = 'Coles · $3.40 · 2L\nstore: coles\nsku: 439693\nprice: 3.40\nurl: https://www.coles.com.au/product/439693';
+  const updated = await (await req('/api/lists/groceries/t1', { method: 'POST', body: JSON.stringify({ content: 'Coles Full Cream Milk 2L', description }) })).json();
+  assert.deepEqual(updated, { id: 't1', content: 'Coles Full Cream Milk 2L', note: 'Coles · $3.40 · 2L' });
+  const post = calls.find((c) => c.method === 'POST' && c.path === '/api/v1/tasks/t1');
+  assert.equal(JSON.parse(post.body).description, description);
+
+  const added = await (await req('/api/lists/groceries', { method: 'POST', body: JSON.stringify({ content: 'Pura Milk 2L', description: 'Woolworths · $4.50 · 2L\nsku: 888' }) })).json();
+  assert.equal(added.note, 'Woolworths · $4.50 · 2L');
 });
 
 test('messages: posts and dismissals are pushed to connected frames at once; expiry sets an alarm', async () => {

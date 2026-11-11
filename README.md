@@ -108,6 +108,26 @@ following the sun. Both themes are CSS variables, so switching costs one repaint
   elsewhere (here: "Grocery List" and "Household"). Tapping an item completes
   it in Todoist, and items can be added from the frame.
 
+  On Groceries, the add field also searches Woolworths and Coles. Tap a product
+  to save it on the Todoist item: the title is the product name, and the note
+  under it is the store, price and size (the stock code and product URL sit on
+  later lines of the description). **Pick** on a line that isn’t a product yet
+  does the same for that line. A recipe’s “For: …” note stays on the first line.
+  Demo mode uses a few sample products and does not call the shops or Todoist.
+
+  Coles prices follow `COLES_STORE_ID` (default `0584` in `wrangler.jsonc`). Set
+  it to the number at the end of your store’s page, such as `4166` from
+  `coles.com.au/find-stores/coles/nsw/marrickville-4166`. The request uses the
+  public website subscription key; `COLES_SUBSCRIPTION_KEY` overrides it if Coles
+  rotates that key. No Coles or Woolworths login is stored on the frame, and
+  nothing here checks out.
+
+  Woolworths is an anonymous catalogue search. Prices are that session’s default
+  store (there is no postcode). If their edge blocks the Worker, the picker says
+  Woolworths is unavailable and still shows Coles. Results are cached in KV for
+  10 minutes. Locally: `npm run dev` in `dashboard/`, open Groceries, and search
+  for `2L milk`.
+
 ## Messages from agents
 
 AI agents can post full-screen messages to the frame: see [docs/messages.md](docs/messages.md).

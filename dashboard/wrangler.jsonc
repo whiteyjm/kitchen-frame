@@ -16,6 +16,7 @@
   // Resizes photos of saved recipes once, when saved (worker/recipes.js).
   "images": { "binding": "IMAGES" },
   // Todoist project names shown as the Groceries and Tasks lists.
-  "vars": { "TODOIST_GROCERY_PROJECT": "Grocery List", "TODOIST_TODO_PROJECT": "Household" },
+  // COLES_STORE_ID is the number at the end of a coles.com.au store page URL. 0584 is only a default catalogue.
+  "vars": { "TODOIST_GROCERY_PROJECT": "Grocery List", "TODOIST_TODO_PROJECT": "Household", "COLES_STORE_ID": "0584" },
   "observability": { "enabled": true }
 }
