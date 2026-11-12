@@ -107,7 +107,12 @@ export default {
       if (url.pathname === '/api/groceries/search' && req.method === 'GET') {
         const found = await searchGroceries(env, url.searchParams.get('q'));
         if (found.error) return json({ error: found.error }, 400);
-        return json({ query: found.query, products: found.products, errors: found.errors });
+        return json({
+          query: found.query,
+          products: found.products,
+          errors: found.errors,
+          ...(found.unavailable ? { unavailable: true } : {}),
+        });
       }
 
       if (url.pathname.startsWith('/api/delivery/')) {

@@ -57,6 +57,34 @@ export function groceryName(item) {
   return splitQuantity(item && item.content).name;
 }
 
+// Queries to try against Coles for one grocery line: the title without a ×N suffix or a
+// "For:" note, then the same line with sizes and the shop name taken off.
+export function colesSearchQueries(raw) {
+  let text = String(raw || '');
+  text = text.replace(/\([^)]*\)/g, ' ');
+  text = text.replace(/\bFor:\s*.*/gi, ' ');
+  text = splitQuantity(text).name;
+  text = text.replace(/^(?:coles|woolworths)\b[:\s-]*/i, '');
+  text = text.replace(/\s+/g, ' ').trim().slice(0, 80);
+  const queries = [];
+  const push = (q) => {
+    const s = String(q || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    if (s.length < 2) return;
+    if (queries.some((x) => x.toLowerCase() === s.toLowerCase())) return;
+    queries.push(s);
+  };
+  push(text);
+  const simple = text
+    .replace(/\b\d+(?:[./]\d+)?\s*(?:ml|l|g|kg|mg|pack|packs|pk|pkt|pkts)\b/gi, ' ')
+    .replace(/\b(?:coles|woolworths)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  push(simple);
+  const words = simple.split(' ').filter((w) => w.length > 2 && !/^\d+$/.test(w));
+  if (words.length > 2) push(words.slice(0, 2).join(' '));
+  return queries;
+}
+
 export function groceryQuantity(item) {
   const given = Number(item && item.quantity);
   if (Number.isFinite(given) && given >= 1) return clampQty(given);
