@@ -111,4 +111,74 @@ test('delivery basket and pending order need the dashboard key and round-trip in
   assert.equal(done.status, 'done');
   assert.equal(done.items[0].url, order.items[0].url);
   assert.equal((await call('/api/delivery/nope', env)).status, 404);
+  assert.equal(order.notify, undefined);
+});
+
+test('submit posts a short webhook in the background and still succeeds when it fails', async () => {
+  const kv = memoryKv();
+  const waited = [];
+  const posts = [];
+  globalThis.fetch = async (url, init = {}) => {
+    posts.push({ url: String(url), method: init.method, headers: init.headers, body: init.body });
+    if (posts.length === 1) return new Response('no', { status: 500 });
+    throw new Error('webhook down');
+  };
+  const env = {
+    DASHBOARD_KEY: 'dash-secret', CALENDAR: kv, COLES_STORE_ID: '4513',
+    ORDER_WEBHOOK_URL: 'https://hooks.example/coles', ORDER_WEBHOOK_KEY: 'hook-secret',
+  };
+  const ctx = { waitUntil: (p) => waited.push(p) };
+  const put = await worker.fetch(new Request('https://frame.test/api/delivery/basket', {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer dash-secret', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: [milk] }),
+  }), env, ctx);
+  assert.equal(put.status, 200);
+
+  const res = await worker.fetch(new Request('https://frame.test/api/delivery/submit', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer dash-secret' },
+  }), env, ctx);
+  const order = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(order.notify, true);
+  assert.equal(order.status, 'pending');
+  await Promise.all(waited);
+  assert.equal(posts.length, 1);
+  const note = JSON.parse(posts[0].body);
+  assert.deepEqual(Object.keys(note).sort(), ['createdAt', 'event', 'itemCount', 'orderId']);
+  assert.equal(note.event, 'coles-order-submitted');
+  assert.equal(note.orderId, order.id);
+  assert.equal(note.createdAt, order.created);
+  assert.equal(note.itemCount, 1);
+  assert.equal(posts[0].headers.Authorization, 'Bearer hook-secret');
+  assert.equal(posts[0].headers['X-Webhook-Key'], 'hook-secret');
+  assert.equal(JSON.stringify(note).includes('Full Cream'), false);
+  assert.equal(JSON.stringify(posts[0].headers).includes('dash-secret'), false);
+  const stored = JSON.parse(kv.stored.get(ORDER_KEY));
+  assert.equal(stored.notify, undefined);
+  assert.equal((await (await worker.fetch(new Request('https://frame.test/api/delivery/pending', {
+    headers: { Authorization: 'Bearer dash-secret' },
+  }), env, ctx)).json()).notify, true);
+
+  // A thrown webhook is logged and does not change the saved order.
+  const again = await worker.fetch(new Request('https://frame.test/api/delivery/submit', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer dash-secret' },
+  }), env, ctx);
+  assert.equal(again.status, 200);
+  await Promise.all(waited);
+  assert.equal(posts.length, 2);
+
+  // No URL: nothing is posted, and the frame is not told to expect Grok Bot.
+  delete env.ORDER_WEBHOOK_URL;
+  const quiet = await worker.fetch(new Request('https://frame.test/api/delivery/submit', {
+    method: 'POST',
+    headers: { Authorization: 'Bearer dash-secret' },
+  }), env, ctx);
+  const quietBody = await quiet.json();
+  assert.equal(quiet.status, 200);
+  assert.equal(quietBody.notify, undefined);
+  await Promise.all(waited);
+  assert.equal(posts.length, 2);
 });

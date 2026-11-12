@@ -352,6 +352,7 @@
           {#if order}
             <p class="status {order.status}" aria-live="polite">{STATUS[order.status] || order.status}</p>
             {#if order.created}<p class="when">{order.status === 'pending' ? 'Sent' : 'Updated'} {stamp(order.updated || order.created)}</p>{/if}
+            {#if order.status === 'pending' && order.notify}<p class="when">Sent – Grok Bot will fill your Coles trolley in a few minutes.</p>{/if}
             {#if stale}<p class="when">The basket has changed since this was sent.</p>{/if}
           {/if}
           {#if progress}<p class="when">{progress}</p>{/if}

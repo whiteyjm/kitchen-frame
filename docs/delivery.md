@@ -17,6 +17,13 @@ Demo mode keeps the basket on the frame and does not call the shop or write KV.
 The basket is replaced as a whole on each save. The pending order is a copy: editing the basket
 afterwards does not change the order until **Send again**.
 
+If `ORDER_WEBHOOK_URL` is set, a successful submit also POSTs
+`{"event":"coles-order-submitted","orderId","createdAt","itemCount"}` to that URL in the
+background (`Authorization: Bearer` and `X-Webhook-Key` from `ORDER_WEBHOOK_KEY`). The notice
+has no product lines. A failed webhook does not fail the submit. The pending order then includes
+`notify: true`, and the tab says Grok Bot will fill the trolley. Unset URL means no call and no
+`notify` flag.
+
 ## Endpoints
 
 Same dashboard key as the other frame APIs (`Authorization: Bearer <DASHBOARD_KEY>`). The agent
