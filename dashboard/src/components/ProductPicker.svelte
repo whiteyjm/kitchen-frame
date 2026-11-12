@@ -5,8 +5,8 @@
   import { demoSearch } from '../lib/groceries.js';
 
   // query is the add field. matching is set when an existing grocery line is being resolved.
-  // store ('coles' or 'woolworths') limits the rows. onplain is omitted when a typed line isn't useful.
-  let { query, matching = '', saving = false, onpick, onplain = null, store = '' } = $props();
+  // onplain is omitted when a typed line isn't useful (the Delivery tab).
+  let { query, matching = '', saving = false, onpick, onplain = null } = $props();
 
   let products = $state([]);
   let errors = $state([]);
@@ -34,18 +34,16 @@
     }
     searching = true;
     failed = '';
-    const only = store;
-    timer = setTimeout(() => run(q, only, ctrl.signal), 400);
+    timer = setTimeout(() => run(q, ctrl.signal), 400);
     return () => { clearTimeout(timer); ctrl.abort(); };
   });
 
-  async function run(q, only, signal) {
+  async function run(q, signal) {
     try {
       const data = ui.demo ? demoSearch(q) : await api('/api/groceries/search?q=' + encodeURIComponent(q), { signal });
       if (signal.aborted) return;
-      const all = data.products || [];
-      products = only ? all.filter((p) => p.store === only) : all;
-      errors = (data.errors || []).filter((err) => !only || err.store === only);
+      products = data.products || [];
+      errors = data.errors || [];
       failed = '';
       searching = false;
     } catch (err) {
@@ -63,10 +61,10 @@
     <p class="hint">
       {#if matching}Choose a product for “{matching}”.
       {:else if query.trim().length < 2}Type a product, like 2L milk.
-      {:else if searching}{store === 'coles' ? 'Searching Coles…' : 'Searching Woolworths and Coles…'}
+      {:else if searching}Searching Coles…
       {:else if failed}{failed}
-      {:else if !products.length}{store === 'coles' ? 'No Coles products matched.' : 'No matching products.'}
-      {:else}{store === 'coles' ? 'Tap a Coles product to add it.' : 'Tap a product to add it.'}{/if}
+      {:else if !products.length}No Coles products matched.
+      {:else}Tap a Coles product to add it.{/if}
     </p>
     {#each errors as err (err.store)}<p class="hint">{err.error}</p>{/each}
     <div class="results">
@@ -80,7 +78,6 @@
           <span class="copy">
             <span class="name">{product.name}</span>
             <span class="sub">
-              <span class="badge {product.store}">{product.storeName}</span>
               {#if extra(product)}<span>{extra(product)}</span>{/if}
             </span>
             <span class="price num">
@@ -113,9 +110,6 @@
   .copy { flex: 1; min-width: 0; }
   .name { display: block; font-size: 20px; font-weight: 600; overflow: hidden; max-height: 2.5em; }
   .sub { display: flex; align-items: center; gap: 8px; margin-top: 3px; font-size: 15px; color: var(--secondary); }
-  .badge { flex: none; font-size: 13px; font-weight: 700; }
-  .badge.woolworths { color: var(--cal2); }
-  .badge.coles { color: var(--red-text); }
   .price { display: block; margin-top: 2px; font-size: 18px; font-weight: 700; }
   .unit { margin-left: 8px; font-size: 15px; font-weight: 500; color: var(--secondary); }
   .as-typed { flex: none; display: flex; align-items: center; justify-content: center; height: 52px; padding: 0 16px; border-radius: 16px; background: var(--ground); font-size: 18px; font-weight: 600; }

@@ -25,6 +25,56 @@ export function isProductNote(note) {
   return /^(Woolworths|Coles) · /.test(String(note || ''));
 }
 
+// Quantity lives on the Todoist title as a trailing " ×2" (nothing when it's 1) and, when a
+// description exists, as a "qty: N" line under the visible note. Sizes like "2L" are not quantities.
+export function clampQty(n) {
+  const x = Math.round(Number(n));
+  if (!Number.isFinite(x)) return null;
+  if (x < 1) return 1;
+  return Math.min(99, x);
+}
+
+export function splitQuantity(content) {
+  const text = String(content || '').trim();
+  const m = text.match(/^(.*\S)\s+[×x]\s*(\d{1,2})$/i);
+  if (!m) return { name: text, quantity: 1 };
+  return { name: m[1].trim(), quantity: clampQty(m[2]) };
+}
+
+export function withQuantity(content, quantity) {
+  const name = splitQuantity(content).name;
+  const n = clampQty(quantity) || 1;
+  return n > 1 ? name + ' ×' + n : name;
+}
+
+export function quantityFromDescription(description) {
+  const m = String(description || '').match(/^qty:\s*(\d{1,2})\s*$/im);
+  return m ? clampQty(m[1]) : 1;
+}
+
+// The frame shows `quantity` from the API. A cached title may still carry the suffix.
+export function groceryName(item) {
+  return splitQuantity(item && item.content).name;
+}
+
+export function groceryQuantity(item) {
+  const given = Number(item && item.quantity);
+  if (Number.isFinite(given) && given >= 1) return clampQty(given);
+  const fromTitle = splitQuantity(item && item.content).quantity;
+  return fromTitle > 1 ? fromTitle : 1;
+}
+
+// Keeps the first line (the note the frame shows) and drops any previous qty line.
+export function setDescriptionQuantity(description, quantity) {
+  const n = clampQty(quantity) || 1;
+  const lines = String(description || '').split('\n').filter((line) => !/^qty:\s*\d+\s*$/i.test(line.trim()));
+  if (n > 1) {
+    const at = lines.findIndex((line) => line.trim());
+    lines.splice(at === -1 ? lines.length : at + 1, 0, 'qty: ' + n);
+  }
+  return lines.join('\n').replace(/^\n+|\n+$/g, '').slice(0, 500);
+}
+
 // existing is a previous description or its first line (the only part the frame keeps).
 // A "For: …" recipe note is carried onto the new first line so it stays visible.
 export function productDescription(product, existing = '') {
@@ -32,7 +82,7 @@ export function productDescription(product, existing = '') {
   let forLine = '';
   for (const line of String(existing || '').split('\n')) {
     const text = line.trim();
-    if (!text || /^(store|sku|price|url): /.test(text)) continue;
+    if (!text || /^(store|sku|price|url|qty): /.test(text)) continue;
     const embedded = text.match(/\bFor: .+$/);
     if (/^(Woolworths|Coles) · /.test(text)) {
       if (!forLine && embedded) forLine = embedded[0];

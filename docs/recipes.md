@@ -13,7 +13,7 @@ On a recipe page, tap the ingredients you already have to cross them off. **Add 
 then adds the rest to the Todoist grocery list (`TODOIST_GROCERY_PROJECT`), one task each, such as
 "Chicken thighs (2 lb)". Each task's description reads "For: <recipe title>". The frame shows that
 note in small grey text under the item (the first line of any Todoist description is shown the
-same way, on Groceries and Tasks). Matching the line to a Woolworths or Coles product keeps
+same way, on Groceries and Tasks). Matching the line to a Coles product keeps
 the “For: …” text on that same line, after the store and price. In demo mode
 nothing reaches Todoist.
 

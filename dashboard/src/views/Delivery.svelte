@@ -5,7 +5,7 @@
   import { api } from '../lib/api.js';
   import { demoSearch } from '../lib/groceries.js';
   import { ui, lists, loadList } from '../lib/state.svelte.js';
-  import { money, colesProductUrl } from '../../shared/product.js';
+  import { money, colesProductUrl, groceryName, groceryQuantity } from '../../shared/product.js';
 
   // Coles only. Send snapshots the basket for an assistant to fill the real cart; nothing is paid here.
   const STATUS = {
@@ -99,11 +99,12 @@
     return saveChain;
   }
 
-  function addProduct(product, save = true) {
+  function addProduct(product, save = true, count = 1) {
     if (!product || product.store !== 'coles') return false;
     const id = String(product.id ?? '').trim();
     const name = String(product.name || '').trim();
     if (!id || !name) return false;
+    const add = Math.min(99, Math.max(1, Math.round(Number(count) || 1)));
     const row = {
       id,
       name,
@@ -111,11 +112,11 @@
       size: String(product.size || '').trim(),
       price: product.price ?? null,
       image: product.image || '',
-      quantity: 1,
+      quantity: add,
       url: colesProductUrl(product) || product.url || '',
     };
     if (items.some((item) => item.id === id)) {
-      items = items.map((item) => item.id === id ? { ...item, quantity: Math.min(99, item.quantity + 1) } : item);
+      items = items.map((item) => item.id === id ? { ...item, quantity: Math.min(99, item.quantity + add) } : item);
     } else {
       items = [...items, row];
     }
@@ -190,12 +191,12 @@
       async function one() {
         while (cursor < source.length) {
           const item = source[cursor++];
-          const q = String(item.content).replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+          const q = groceryName(item).replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
           if (q.length >= 2) {
             try {
               const data = ui.demo ? demoSearch(q) : await api('/api/groceries/search?q=' + encodeURIComponent(q));
               const hit = (data.products || []).find((p) => p.store === 'coles' && p.available !== false);
-              if (hit && addProduct(hit, false)) added++;
+              if (hit && addProduct(hit, false, groceryQuantity(item))) added++;
               else missed++;
             } catch {
               missed++;
@@ -280,7 +281,7 @@
   {#if error}<p class="note">{error}</p>{/if}
 
   {#if adding && draft.trim().length >= 2}
-    <ProductPicker query={draft} store="coles" saving={sending || bulkBusy} onpick={choose} />
+    <ProductPicker query={draft} saving={sending || bulkBusy} onpick={choose} />
   {:else}
     <div class="body">
       <div class="sheet list">
