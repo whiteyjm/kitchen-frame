@@ -13,6 +13,7 @@
   let searching = $state(false);
   let failed = $state('');
   let unavailable = $state(false);
+  let relayOffline = $state(false);
   let attempt = $state(0);
   let broken = $state({});
 
@@ -35,12 +36,14 @@
       errors = [];
       failed = '';
       unavailable = false;
+      relayOffline = false;
       searching = false;
       return;
     }
     searching = true;
     failed = '';
     unavailable = false;
+    relayOffline = false;
     timer = setTimeout(() => run(q, ctrl.signal), n ? 0 : 400);
     return () => { clearTimeout(timer); ctrl.abort(); };
   });
@@ -52,6 +55,7 @@
       products = data.products || [];
       errors = data.errors || [];
       unavailable = !!data.unavailable || errors.some((err) => err.unavailable);
+      relayOffline = !!(data.relay && data.relay.online === false);
       failed = '';
       searching = false;
     } catch (err) {
@@ -59,6 +63,7 @@
       products = [];
       errors = [];
       unavailable = true;
+      relayOffline = false;
       failed = 'Coles didn’t answer, retry';
       searching = false;
     }
@@ -75,6 +80,9 @@
       {:else if !products.length}No Coles products matched.
       {:else}Tap a Coles product to add it.{/if}
     </p>
+    {#if (unavailable || failed) && relayOffline && !searching}
+      <p class="hint">Coles search needs the laptop on</p>
+    {/if}
     {#if (unavailable || failed) && !searching}
       <button type="button" class="as-typed" onclick={retry}>Retry</button>
     {/if}

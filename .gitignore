@@ -8,6 +8,8 @@ reference/
 backups/
 diagnostics/
 .dev.vars
+relay/.env
+relay/cloudflared.exe
 kiosk/build/
 .prod.vars
 .frame.vars

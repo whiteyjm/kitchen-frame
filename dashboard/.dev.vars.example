@@ -23,3 +23,5 @@ TODOIST_TOKEN=""
 # Optional: after Send to Coles, POST a short notice here. Unset = no webhook.
 # ORDER_WEBHOOK_URL="https://example.com/hooks/coles-order"
 # ORDER_WEBHOOK_KEY=""
+# Shared with relay/.env. The laptop posts its tunnel URL with this key. Unset = no relay.
+# RELAY_KEY=""
