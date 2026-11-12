@@ -191,6 +191,30 @@ test('a coles result is cached in KV for 24 hours and kept when a refresh fails'
   assert.equal(puts.length, 1);
 });
 
+test('an Incapsula challenge page is not stored as a search result', async () => {
+  const stored = new Map();
+  const puts = [];
+  globalThis.fetch = async () => new Response(
+    '<html>Pardon Our Interruption _Incapsula_ "searchResults":{"pageSize":48,"noOfResults":1,"results":[{"_type":"PRODUCT","id":1,"name":"Milk","pricing":{"now":1}}]}</html>',
+    { status: 200, headers: { 'content-type': 'text/html' } },
+  );
+  const env = {
+    COLES_STORE_ID: '4513',
+    CALENDAR: {
+      get: async (k, type) => {
+        const v = stored.get(k);
+        if (v == null) return null;
+        return type === 'json' ? JSON.parse(v) : v;
+      },
+      put: async (k, v, opts) => { stored.set(k, v); puts.push([k, opts]); },
+    },
+  };
+  const found = await searchGroceries(env, 'milk');
+  assert.equal(found.products.length, 0);
+  assert.equal(found.unavailable, true);
+  assert.equal(puts.length, 0);
+});
+
 test('a fresh relay is used first and a direct 403 skips further direct calls', async () => {
   const product = { _type: 'PRODUCT', id: 1, name: 'Milk', brand: 'Coles', size: '2L', availability: true, pricing: { now: 3 }, imageUris: [] };
   const stored = new Map([['relay:home', JSON.stringify({ url: 'https://laptop.trycloudflare.com', lastSeen: new Date().toISOString() })]]);

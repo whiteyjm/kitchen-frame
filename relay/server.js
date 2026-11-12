@@ -11,6 +11,7 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const COLES = 'https://www.coles.com.au';
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const HEARTBEAT_MS = 5 * 60 * 1000;
+const COOKIE_MS = 20 * 60 * 1000;
 // Public website key, the same one the Coles page ships. Not a household secret.
 const COLES_KEY = 'eae83861d1cd4de6bb9cd8a2cd6f041e';
 
@@ -63,6 +64,31 @@ function browserHeaders(target, jar) {
   return headers;
 }
 
+export function isChallenge(text) {
+  const body = String(text || '');
+  return body.includes('Pardon Our Interruption') || body.includes('_Incapsula_');
+}
+
+function describe(err) {
+  const cause = err && err.cause;
+  return {
+    name: err && err.name || 'Error',
+    causeCode: cause && cause.code || '',
+    cause: cause && typeof cause.message === 'string' ? cause.message.slice(0, 180) : '',
+  };
+}
+
+function jitter() {
+  const ms = 50 + Math.floor(Math.random() * 150);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export async function refreshCookies(jar, fetchImpl = fetch) {
+  const home = await fetchImpl(COLES + '/', { headers: browserHeaders(new URL(COLES + '/'), jar), redirect: 'manual' });
+  rememberCookies(home, jar);
+  await home.arrayBuffer().catch(() => {});
+}
+
 function rememberCookies(res, jar) {
   const listed = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
   for (const raw of listed) {
@@ -72,8 +98,27 @@ function rememberCookies(res, jar) {
   }
 }
 
+// One upstream catalogue call at a time, with a short pause, so Imperva does not see a burst.
+function makeGate() {
+  let gate = Promise.resolve();
+  return function serial(fn) {
+    const run = gate.then(fn, fn);
+    gate = run.then(() => {}, () => {});
+    return run;
+  };
+}
+
+async function pull(target, jar, fetchImpl) {
+  const upstream = await fetchImpl(target, { headers: browserHeaders(target, jar), redirect: 'manual' });
+  rememberCookies(upstream, jar);
+  const body = Buffer.from(await upstream.arrayBuffer());
+  return { upstream, body };
+}
+
 // fetchImpl is injectable for tests. jar is the Imperva cookie jar for this process.
-export function createHandler({ key, fetchImpl = fetch, jar = new Map() }) {
+export function createHandler({ key, fetchImpl = fetch, jar = new Map(), delay = null, serial = null }) {
+  const queue = serial || makeGate();
+  const pause = delay || (() => {});
   return async function handler(req, res) {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       res.writeHead(404); res.end(); return;
@@ -86,25 +131,52 @@ export function createHandler({ key, fetchImpl = fetch, jar = new Map() }) {
       res.writeHead(404); res.end(); return;
     }
     const target = new URL(incoming.pathname + incoming.search, COLES);
-    try {
-      const upstream = await fetchImpl(target, { headers: browserHeaders(target, jar), redirect: 'manual' });
-      rememberCookies(upstream, jar);
-      const body = Buffer.from(await upstream.arrayBuffer());
+    await queue(async () => {
+      await Promise.resolve(pause());
+      let upstream, body;
+      try {
+        ({ upstream, body } = await pull(target, jar, fetchImpl));
+      } catch (err) {
+        console.error(JSON.stringify({ msg: 'relay coles', path: target.pathname, ...describe(err) }));
+        try {
+          ({ upstream, body } = await pull(target, jar, fetchImpl));
+        } catch (again) {
+          console.error(JSON.stringify({ msg: 'relay coles', path: target.pathname, retry: true, ...describe(again) }));
+          res.writeHead(502, { 'Cache-Control': 'no-store' }); res.end(); return;
+        }
+      }
+      if (upstream.status === 200 && isChallenge(body.toString('utf8'))) {
+        console.log(JSON.stringify({ msg: 'relay challenge', status: upstream.status, path: target.pathname }));
+        try { await refreshCookies(jar, fetchImpl); } catch (err) {
+          console.error(JSON.stringify({ msg: 'relay cookies', ...describe(err) }));
+        }
+        try {
+          ({ upstream, body } = await pull(target, jar, fetchImpl));
+        } catch (err) {
+          console.error(JSON.stringify({ msg: 'relay coles', path: target.pathname, retry: true, ...describe(err) }));
+          res.writeHead(503, { 'Cache-Control': 'no-store' }); res.end(); return;
+        }
+        if (isChallenge(body.toString('utf8'))) {
+          console.log(JSON.stringify({ msg: 'relay challenge', status: upstream.status, path: target.pathname, again: true }));
+          res.writeHead(503, { 'Content-Type': 'text/plain', 'Cache-Control': 'no-store' });
+          res.end('challenge');
+          return;
+        }
+      }
+      console.log(JSON.stringify({ msg: 'relay coles', status: upstream.status, path: target.pathname }));
       const type = upstream.headers.get('content-type') || 'application/octet-stream';
       res.writeHead(upstream.status, { 'Content-Type': type, 'Cache-Control': 'no-store' });
       res.end(req.method === 'HEAD' ? undefined : body);
-    } catch (err) {
-      console.error('relay coles', err && err.message || err);
-      res.writeHead(502); res.end();
-    }
+    });
   };
 }
 
-export function startRelay({ port = 0, key, fetchImpl }) {
+export function startRelay({ port = 0, key, fetchImpl, delay }) {
   const jar = new Map();
-  const server = http.createServer(createHandler({ key, fetchImpl, jar }));
+  const serial = makeGate();
+  const server = http.createServer(createHandler({ key, fetchImpl, jar, delay, serial }));
   return new Promise((resolve) => {
-    server.listen(port, '127.0.0.1', () => resolve({ server, port: server.address().port, jar }));
+    server.listen(port, '127.0.0.1', () => resolve({ server, port: server.address().port, jar, serial }));
   });
 }
 
@@ -124,7 +196,7 @@ function startTunnel(port) {
     if (found && found !== currentUrl) {
       currentUrl = found;
       console.log('tunnel ' + currentUrl);
-      register().catch((err) => console.error('relay register', err && err.message || err));
+      register().catch((err) => console.error(JSON.stringify({ msg: 'relay register', error: err && err.name || 'Error' })));
     }
   };
   tunnel.stdout.on('data', watch);
@@ -154,17 +226,16 @@ async function main() {
     process.exit(1);
   }
   const port = Number(process.env.PORT) || 8787;
-  const { server, jar } = await startRelay({ port, key });
+  const { server, jar, serial } = await startRelay({ port, key, delay: jitter });
   const listening = server.address().port;
   console.log('relay listening on ' + listening);
-  // One homepage fetch seeds Imperva cookies before the first catalogue call.
-  try {
-    const home = await fetch(COLES + '/', { headers: browserHeaders(new URL(COLES + '/'), jar) });
-    rememberCookies(home, jar);
-    await home.arrayBuffer().catch(() => {});
-  } catch { /* the first real search will try again */ }
+  const warm = () => serial(() => refreshCookies(jar, fetch)).catch((err) => {
+    console.error(JSON.stringify({ msg: 'relay cookies', ...describe(err) }));
+  });
+  await warm();
   startTunnel(listening);
-  setInterval(() => { register().catch((err) => console.error('relay register', err && err.message || err)); }, HEARTBEAT_MS);
+  setInterval(() => { register().catch((err) => console.error(JSON.stringify({ msg: 'relay register', error: err && err.name || 'Error' }))); }, HEARTBEAT_MS);
+  setInterval(() => { warm(); }, COOKIE_MS);
 }
 
 const invoked = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
