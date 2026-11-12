@@ -27,8 +27,8 @@ The developer wiki is in [openwiki/](openwiki/quickstart.md).
 ## Layout
 
 - `dashboard/src/`: the web app (Svelte 5, no SvelteKit). Tabs: Home (clock, weather, today's
-  events, to-dos), Calendar (week and month), Groceries and Tasks (Todoist), Recipes (TheMealDB
-  plus saved recipes) and Music (Home Assistant). After 5 minutes untouched
+  events, to-dos), Calendar (week and month), Groceries and Tasks (Todoist), Delivery (a Coles
+  basket), Recipes (TheMealDB plus saved recipes) and Music (Home Assistant). After 5 minutes untouched
   it switches to an idle clock screen. The frame loads it full screen in a kiosk WebView.
 - `dashboard/worker/`: the Cloudflare Worker that serves the app and its API: merged calendar,
   weather (Open-Meteo), Todoist lists, the iCloud shared album (photos proxied and cached in KV),
@@ -127,6 +127,13 @@ following the sun. Both themes are CSS variables, so switching costs one repaint
   Woolworths is unavailable and still shows Coles. Results are cached in KV for
   10 minutes. Locally: `npm run dev` in `dashboard/`, open Groceries, and search
   for `2L milk`.
+
+## Coles delivery
+
+The Delivery tab reuses that search for a Coles basket (quantity, line totals, subtotal).
+**Send to Coles** stores the basket as a pending order. It does not check out or pay. An
+assistant with the dashboard key reads the order, fills the real Coles cart, and marks it
+filled. See [docs/delivery.md](docs/delivery.md).
 
 ## Messages from agents
 
