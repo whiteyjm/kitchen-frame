@@ -123,9 +123,10 @@ following the sun. Both themes are CSS variables, so switching costs one repaint
   public website subscription key; `COLES_SUBSCRIPTION_KEY` overrides it if Coles
   rotates that key. No Coles login is stored on the frame, and nothing here
   checks out. A search returns 28 Coles products (it used to keep 8), fetching
-  another page when Coles caps the first one. Results are cached in KV for
-  10 minutes. Locally: `npm run dev` in `dashboard/`, open Groceries, and search
-  for `2L milk`.
+  another page when Coles caps the first one. A block or an empty error is not
+  cached; the picker says Coles didn’t answer and offers Retry. Real results
+  are cached in KV for 10 minutes. Locally: `npm run dev` in `dashboard/`, open
+  Groceries, and search for `2L milk`.
 
 ## Coles delivery
 

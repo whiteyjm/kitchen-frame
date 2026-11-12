@@ -12,6 +12,8 @@
   let errors = $state([]);
   let searching = $state(false);
   let failed = $state('');
+  let unavailable = $state(false);
+  let attempt = $state(0);
   let broken = $state({});
 
   function extra(product) {
@@ -21,20 +23,25 @@
     return [brand, size].filter(Boolean).join(' · ');
   }
 
+  function retry() { attempt += 1; }
+
   $effect(() => {
     const q = query.trim();
+    const n = attempt;
     let timer;
     const ctrl = new AbortController();
     if (q.length < 2) {
       products = [];
       errors = [];
       failed = '';
+      unavailable = false;
       searching = false;
       return;
     }
     searching = true;
     failed = '';
-    timer = setTimeout(() => run(q, ctrl.signal), 400);
+    unavailable = false;
+    timer = setTimeout(() => run(q, ctrl.signal), n ? 0 : 400);
     return () => { clearTimeout(timer); ctrl.abort(); };
   });
 
@@ -44,13 +51,15 @@
       if (signal.aborted) return;
       products = data.products || [];
       errors = data.errors || [];
+      unavailable = !!data.unavailable || errors.some((err) => err.unavailable);
       failed = '';
       searching = false;
     } catch (err) {
       if (signal.aborted || err.name === 'AbortError') return;
       products = [];
       errors = [];
-      failed = 'Couldn’t search just now.';
+      unavailable = true;
+      failed = 'Coles didn’t answer, retry';
       searching = false;
     }
   }
@@ -62,11 +71,13 @@
       {#if matching}Choose a product for “{matching}”.
       {:else if query.trim().length < 2}Type a product, like 2L milk.
       {:else if searching}Searching Coles…
-      {:else if failed}{failed}
+      {:else if unavailable || failed}Coles didn’t answer, retry
       {:else if !products.length}No Coles products matched.
       {:else}Tap a Coles product to add it.{/if}
     </p>
-    {#each errors as err (err.store)}<p class="hint">{err.error}</p>{/each}
+    {#if (unavailable || failed) && !searching}
+      <button type="button" class="as-typed" onclick={retry}>Retry</button>
+    {/if}
     <div class="results">
       {#each products as product (product.store + product.id)}
         <button type="button" class="product" disabled={saving} onclick={() => onpick(product)}>

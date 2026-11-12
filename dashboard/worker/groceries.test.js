@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { normalizeWoolworths, normalizeColes, searchGroceries, cleanQuery, COLES_RESULTS } from './groceries.js';
-import { productTitle, productDescription, isProductNote, mergeProducts, withQuantity, splitQuantity, setDescriptionQuantity } from '../shared/product.js';
+import { productTitle, productDescription, isProductNote, mergeProducts, withQuantity, splitQuantity, setDescriptionQuantity, colesSearchQueries } from '../shared/product.js';
 
 const colesMilk = {
   _type: 'PRODUCT', id: 439693, name: 'Full Cream Milk', brand: 'Coles', size: '2L', availability: true,
@@ -54,6 +54,11 @@ test('search asks only Coles, keeps twenty more rows than the old cap, and pages
   assert.deepEqual([withQuantity('Milk', 1), withQuantity('Milk ×2', 3), splitQuantity('Coles Milk 2L ×2').name], ['Milk', 'Milk ×3', 'Coles Milk 2L']);
   assert.equal(setDescriptionQuantity('Coles · $3.40\nsku: 1', 2), 'Coles · $3.40\nqty: 2\nsku: 1');
   assert.equal(setDescriptionQuantity('Coles · $3.40\nqty: 2\nsku: 1', 1), 'Coles · $3.40\nsku: 1');
+  assert.deepEqual(
+    colesSearchQueries('Coles Full Cream Milk 2L ×2 (For: custard)'),
+    ['Full Cream Milk 2L', 'Full Cream Milk', 'Full Cream'],
+  );
+  assert.deepEqual(colesSearchQueries('Eggs ×3'), ['Eggs']);
 
   const calls = [];
   const page = (start, n, pageSize) => ({
@@ -84,7 +89,73 @@ test('search asks only Coles, keeps twenty more rows than the old cap, and pages
   };
   const html = await searchGroceries({}, 'bread');
   assert.deepEqual(html.products, []);
-  assert.deepEqual(html.errors, [{ store: 'coles', error: 'Coles is unavailable right now.' }]);
+  assert.equal(html.unavailable, true);
+  assert.equal(html.errors[0].error, 'Coles didn’t answer, retry');
+});
+
+test('an empty Coles answer is not cached, and a later good answer is', async () => {
+  const stored = new Map();
+  const puts = [];
+  let calls = 0;
+  globalThis.fetch = async (url) => {
+    calls++;
+    const u = String(url);
+    if (u.includes('/search/products')) {
+      return new Response('<html>incapsula</html>', { headers: { 'content-type': 'text/html' } });
+    }
+    if (calls < 3) return Response.json({ pageSize: 0, noOfResults: 0, results: [] });
+    return Response.json({ pageSize: 20, noOfResults: 1, results: [colesMilk] });
+  };
+  const env = {
+    COLES_STORE_ID: '4513',
+    CALENDAR: {
+      get: async (k, type) => {
+        const v = stored.get(k);
+        if (v == null) return null;
+        return type === 'json' ? JSON.parse(v) : v;
+      },
+      put: async (k, v, opts) => { stored.set(k, v); puts.push([k, opts]); },
+    },
+  };
+  const empty = await searchGroceries(env, 'milk');
+  assert.equal(empty.products.length, 0);
+  assert.equal(empty.unavailable, true);
+  assert.equal(puts.length, 0);
+  const again = await searchGroceries(env, 'milk');
+  assert.equal(again.products.length, 1);
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0][1].expirationTtl, 600);
+});
+
+test('a failed second page still returns the first page', async () => {
+  globalThis.fetch = async (url) => {
+    const start = Number(new URL(url).searchParams.get('start'));
+    if (start === 0) {
+      return Response.json({
+        pageSize: 20, noOfResults: 40,
+        results: Array.from({ length: 20 }, (_, i) => ({ _type: 'PRODUCT', id: i + 1, name: 'Milk ' + i, brand: 'Coles', size: '1L', availability: true, pricing: { now: 2 }, imageUris: [] })),
+      });
+    }
+    return new Response('<html>blocked</html>', { status: 403, headers: { 'content-type': 'text/html' } });
+  };
+  const found = await searchGroceries({}, 'milk');
+  assert.equal(found.products.length, 20);
+  assert.equal(found.unavailable, undefined);
+});
+
+test('the website HTML is used when the BFF comes back empty', async () => {
+  const product = { _type: 'PRODUCT', id: 439693, name: 'Full Cream Milk', brand: 'Coles', size: '2L', availability: true, pricing: { now: 3.4 }, imageUris: [] };
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/api/bff/')) return Response.json({ pageSize: 0, noOfResults: 0, results: [] });
+    if (u.includes('/search/products')) {
+      return new Response('<html><script>"searchResults":' + JSON.stringify({ pageSize: 48, noOfResults: 1, results: [product] }) + '</script></html>', { headers: { 'content-type': 'text/html' } });
+    }
+    return new Response('no', { status: 404 });
+  };
+  const found = await searchGroceries({}, 'milk');
+  assert.equal(found.products[0].id, '439693');
+  assert.equal(found.unavailable, undefined);
 });
 
 test('a coles result is cached in KV for 10 minutes', async () => {

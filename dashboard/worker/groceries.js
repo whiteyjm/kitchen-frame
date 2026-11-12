@@ -19,14 +19,23 @@ export function cleanQuery(q) {
   return String(q || '').replace(/[\u0000-\u001f]/g, '').trim().replace(/\s+/g, ' ').slice(0, 80);
 }
 
+// Shown when Coles answers with a block instead of a catalogue. The picker turns this into a Retry button.
+export const COLES_RETRY = 'Coles didn’t answer, retry';
+const RETRIES = 2;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export async function searchGroceries(env, raw) {
   const query = cleanQuery(raw);
   if (query.length < 2) return { error: 'query too short' };
   try {
-    return { query, products: await searchColes(env, query), errors: [] };
+    const found = await searchColes(env, query);
+    if (found.blocked) {
+      return { query, products: [], unavailable: true, errors: [{ store: 'coles', unavailable: true, error: COLES_RETRY }] };
+    }
+    return { query, products: found.products, errors: [] };
   } catch (err) {
     console.error('grocery coles', err);
-    return { query, products: [], errors: [{ store: 'coles', error: 'Coles is unavailable right now.' }] };
+    return { query, products: [], unavailable: true, errors: [{ store: 'coles', unavailable: true, error: COLES_RETRY }] };
   }
 }
 
@@ -34,41 +43,72 @@ async function searchColes(env, query) {
   const storeId = String(env.COLES_STORE_ID || '0584');
   const key = 'groc:v2:coles:' + storeId + ':' + encodeURIComponent(query.toLowerCase());
   const hit = await readCache(env, key);
-  if (hit) return hit;
-  const products = [];
-  const seen = new Set();
-  let start = 0;
-  // Coles answers one page at a time (pageSize is often 20, and a page can also run long).
-  // Keep asking while a full page comes back and we still need rows.
-  for (let page = 0; page < 4 && products.length < COLES_RESULTS; page++) {
-    let data;
-    try {
-      data = await fetchColesPage(env, query, storeId, start);
-    } catch (err) {
-      if (!products.length) throw err;
-      break;
-    }
-    const batch = normalizeColes(data);
-    let added = 0;
-    for (const product of batch) {
-      if (!product.id || seen.has(product.id)) continue;
-      seen.add(product.id);
-      products.push(product);
-      added++;
-      if (products.length >= COLES_RESULTS) break;
-    }
-    if (!added) break;
-    const pageSize = Number(data && data.pageSize);
-    const step = pageSize > 0 ? pageSize : batch.length;
-    if (!step || batch.length < step) break;
-    start += step;
+  if (hit) return { products: hit, blocked: false };
+  const first = await loadPage(env, query, storeId, 0);
+  if (!first.products.length) {
+    console.log(JSON.stringify({ msg: 'coles empty', query, storeId, blocked: !!first.blocked, via: first.via || '' }));
+    return { products: [], blocked: !!first.blocked };
+  }
+  let products = first.products;
+  const step = nextStart(first);
+  if (step) {
+    // A failed second page must not throw away the first.
+    const more = await loadPage(env, query, storeId, step, { fallback: false });
+    if (more.products.length) products = mergeFound(products, more.products);
+    else console.log(JSON.stringify({ msg: 'coles page2', query, storeId, start: step, blocked: !!more.blocked }));
   }
   const out = products.slice(0, COLES_RESULTS);
-  await writeCache(env, key, out);
+  if (out.length) await writeCache(env, key, out);
+  return { products: out, blocked: false };
+}
+
+function nextStart(page) {
+  if (!page || page.products.length >= COLES_RESULTS) return 0;
+  const size = page.pageSize || 0;
+  if (!(size > 0 && page.products.length >= size)) return 0;
+  // noOfResults 0 means the field was missing. A full page is worth one more request.
+  if (page.total > 0 && page.total <= page.products.length) return 0;
+  return size;
+}
+
+function mergeFound(current, extra) {
+  const seen = new Set(current.map((p) => p.id));
+  const out = current.slice();
+  for (const product of extra) {
+    if (!product.id || seen.has(product.id) || out.length >= COLES_RESULTS) continue;
+    seen.add(product.id);
+    out.push(product);
+  }
   return out;
 }
 
-async function fetchColesPage(env, query, storeId, start) {
+// Page 0 retries a block, then the website HTML (and a fresh Next build id). Later pages do not.
+async function loadPage(env, query, storeId, start, opts = {}) {
+  const fallback = opts.fallback !== false && start === 0;
+  let last = { products: [], blocked: true, pageSize: 0, total: 0, via: 'bff' };
+  for (let attempt = 0; attempt < (fallback ? RETRIES : 1); attempt++) {
+    if (attempt) await sleep(400 * attempt);
+    try {
+      last = await fetchBff(env, query, storeId, start);
+    } catch (err) {
+      last = { products: [], blocked: true, pageSize: 0, total: 0, via: 'bff', status: 0 };
+      console.log(JSON.stringify({ msg: 'coles bff', query, start, attempt, error: String(err && err.message || err) }));
+    }
+    console.log(JSON.stringify({
+      msg: 'coles bff', query, storeId, start, attempt,
+      status: last.status || 0, products: last.products.length, pageSize: last.pageSize, blocked: !!last.blocked,
+    }));
+    if (last.products.length) return last;
+    if (!last.blocked) return last;
+  }
+  if (!fallback) return last;
+  const html = await fetchHtml(env, query);
+  console.log(JSON.stringify({ msg: 'coles html', query, products: html.products.length, blocked: !!html.blocked, via: html.via || '' }));
+  if (html.products.length || !html.blocked) return html;
+  return last;
+}
+
+async function fetchBff(env, query, storeId, start) {
   const url = new URL(COLES + '/api/bff/products/search');
   url.searchParams.set('storeId', storeId);
   url.searchParams.set('searchTerm', query);
@@ -77,20 +117,116 @@ async function fetchColesPage(env, query, storeId, start) {
   url.searchParams.set('excludeAds', 'true');
   const res = await fetch(url, {
     signal: AbortSignal.timeout(FETCH_MS),
-    headers: {
-      Accept: 'application/json',
-      'Accept-Language': 'en-AU,en;q=0.9',
-      'User-Agent': UA,
-      Origin: COLES,
-      Referer: COLES + '/search?q=' + encodeURIComponent(query),
-      'ocp-apim-subscription-key': env.COLES_SUBSCRIPTION_KEY || COLES_KEY,
-    },
+    headers: colesHeaders(env, query, true),
   });
   const data = await readJson(res);
-  if (!res.ok || !data || !Array.isArray(data.results)) {
-    throw new Error(!res.ok ? 'Coles search failed (HTTP ' + res.status + ')' : 'Coles blocked the search');
+  if (res.status === 403 || res.status === 429 || res.status === 503 || !res.ok || !data || !Array.isArray(data.results)) {
+    return { products: [], blocked: true, status: res.status, pageSize: 0, total: 0, via: 'bff' };
   }
-  return data;
+  return pageFrom(data, res.status, 'bff');
+}
+
+function pageFrom(data, status, via) {
+  const products = normalizeColes(data);
+  const pageSize = Number(data.pageSize) || 0;
+  const total = Number(data.noOfResults) || 0;
+  // The BFF uses pageSize 0 and an empty list both for "nothing matched" and for a rejected
+  // page. Only the BFF copy is treated as a block; the website HTML confirms a real miss.
+  const blocked = via === 'bff' && !products.length && pageSize === 0 && total === 0;
+  return { products, blocked, status, pageSize, total, via };
+}
+
+async function fetchHtml(env, query) {
+  let res;
+  try {
+    res = await fetch(COLES + '/search/products?q=' + encodeURIComponent(query), {
+      signal: AbortSignal.timeout(FETCH_MS),
+      headers: { ...colesHeaders(env, query, false), Accept: 'text/html' },
+    });
+  } catch (err) {
+    console.log(JSON.stringify({ msg: 'coles html', query, error: String(err && err.message || err) }));
+    return { products: [], blocked: true, pageSize: 0, total: 0, via: 'html' };
+  }
+  const html = await res.text();
+  const embedded = extractSearchResults(html);
+  if (res.ok && embedded) return pageFrom(embedded, res.status, 'html');
+  const buildId = buildIdFrom(html);
+  if (buildId) {
+    const viaNext = await fetchNextData(env, query, buildId);
+    if (viaNext) return viaNext;
+  }
+  return { products: [], blocked: true, status: res.status, pageSize: 0, total: 0, via: 'html' };
+}
+
+async function fetchNextData(env, query, buildId) {
+  const url = COLES + '/_next/data/' + encodeURIComponent(buildId) + '/search/products.json?q=' + encodeURIComponent(query);
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(FETCH_MS), headers: colesHeaders(env, query, true) });
+    const data = await readJson(res);
+    const found = data && findResults(data);
+    console.log(JSON.stringify({ msg: 'coles next', query, buildId, status: res.status, products: found ? normalizeColes(found).length : 0 }));
+    if (!res.ok || !found) return null;
+    return pageFrom(found, res.status, 'next');
+  } catch (err) {
+    console.log(JSON.stringify({ msg: 'coles next', query, buildId, error: String(err && err.message || err) }));
+    return null;
+  }
+}
+
+function colesHeaders(env, query, json) {
+  return {
+    Accept: json ? 'application/json' : 'text/html',
+    'Accept-Language': 'en-AU,en;q=0.9',
+    'User-Agent': UA,
+    Origin: COLES,
+    Referer: COLES + '/search?q=' + encodeURIComponent(query),
+    'ocp-apim-subscription-key': (env && env.COLES_SUBSCRIPTION_KEY) || COLES_KEY,
+  };
+}
+
+export function extractSearchResults(html) {
+  const text = String(html || '');
+  const key = '"searchResults":';
+  const at = text.indexOf(key);
+  if (at < 0) return null;
+  const start = text.indexOf('{', at + key.length);
+  if (start < 0) return null;
+  let depth = 0, quote = '', esc = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      if (esc) esc = false;
+      else if (c === '\\') esc = true;
+      else if (c === quote) quote = '';
+      continue;
+    }
+    if (c === '"' || c === "'") { quote = c; continue; }
+    if (c === '{') depth++;
+    else if (c === '}') {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; }
+      }
+    }
+  }
+  return null;
+}
+
+function buildIdFrom(html) {
+  const m = String(html || '').match(/\/_next\/static\/([^/"']+)\/_buildManifest\.js/);
+  return m ? m[1] : '';
+}
+
+function findResults(node, depth = 0) {
+  if (!node || typeof node !== 'object' || depth > 6) return null;
+  if (Array.isArray(node.results) && (node.pageSize != null || node.noOfResults != null)) return node;
+  for (const value of Object.values(node)) {
+    if (value && typeof value === 'object') {
+      const hit = findResults(value, depth + 1);
+      if (hit) return hit;
+    }
+  }
+  return null;
 }
 
 async function readJson(res) {
@@ -193,7 +329,8 @@ async function readCache(env, key) {
   if (!env.CALENDAR) return null;
   try {
     const hit = await env.CALENDAR.get(key, 'json');
-    return Array.isArray(hit) ? hit : null;
+    // An empty list used to be stored for 10 minutes and made the same search stay blank.
+    return Array.isArray(hit) && hit.length ? hit : null;
   } catch {
     return null;
   }

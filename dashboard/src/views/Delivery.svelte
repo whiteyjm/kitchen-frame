@@ -5,7 +5,7 @@
   import { api } from '../lib/api.js';
   import { demoSearch } from '../lib/groceries.js';
   import { ui, lists, loadList } from '../lib/state.svelte.js';
-  import { money, colesProductUrl, groceryName, groceryQuantity } from '../../shared/product.js';
+  import { money, colesProductUrl, groceryName, groceryQuantity, colesSearchQueries } from '../../shared/product.js';
 
   // Coles only. Send snapshots the basket for an assistant to fill the real cart; nothing is paid here.
   const STATUS = {
@@ -170,7 +170,28 @@
     sending = false;
   }
 
-  // Top Coles match for each Todoist grocery line. A few searches at a time: the Worker caches them.
+  const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  // One Coles lookup. A block is tried once more; a real miss moves on to a shorter query.
+  async function lookup(q) {
+    let blocked = false;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (attempt) await wait(400);
+      try {
+        const data = ui.demo ? demoSearch(q) : await api('/api/groceries/search?q=' + encodeURIComponent(q));
+        const hit = (data.products || []).find((p) => p.store === 'coles' && p.available !== false);
+        if (hit) return { hit };
+        if (data.unavailable) { blocked = true; continue; }
+        return { hit: null };
+      } catch {
+        blocked = true;
+      }
+    }
+    return { hit: null, unavailable: blocked };
+  }
+
+  // One grocery line at a time, so a burst of searches doesn't trip Coles. The ×N suffix and
+  // any "For:" note are stripped, then a shorter query is tried before giving up.
   async function addGroceryList() {
     if (bulkBusy || sending) return;
     bulkBusy = true;
@@ -179,38 +200,38 @@
     progress = 'Loading the grocery list…';
     try {
       await loadList('groceries');
-      const source = (lists.groceries.items || []).filter((item) => String(item.content || '').trim().length >= 2).slice(0, 30);
+      const source = (lists.groceries.items || []).filter((item) => groceryName(item).trim().length >= 2).slice(0, 30);
       if (!source.length) {
         bulkNote = lists.groceries.error || 'Grocery list is empty.';
         return;
       }
       let added = 0;
-      let missed = 0;
-      let finished = 0;
-      let cursor = 0;
-      async function one() {
-        while (cursor < source.length) {
-          const item = source[cursor++];
-          const q = groceryName(item).replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
-          if (q.length >= 2) {
-            try {
-              const data = ui.demo ? demoSearch(q) : await api('/api/groceries/search?q=' + encodeURIComponent(q));
-              const hit = (data.products || []).find((p) => p.store === 'coles' && p.available !== false);
-              if (hit && addProduct(hit, false, groceryQuantity(item))) added++;
-              else missed++;
-            } catch {
-              missed++;
-            }
-          } else missed++;
-          finished++;
-          progress = 'Matching ' + finished + ' of ' + source.length + '…';
+      const missed = [];
+      const unanswered = [];
+      for (let n = 0; n < source.length; n++) {
+        const item = source[n];
+        const name = groceryName(item);
+        progress = 'Matching ' + (n + 1) + ' of ' + source.length + '…';
+        const queries = colesSearchQueries(item.content);
+        let hit = null;
+        let blocked = false;
+        for (const q of queries) {
+          const found = await lookup(q);
+          if (found.hit) { hit = found.hit; break; }
+          if (found.unavailable) blocked = true;
+          else blocked = false;
         }
+        if (hit && addProduct(hit, false, groceryQuantity(item))) added++;
+        else if (blocked) unanswered.push(name);
+        else if (queries.length) missed.push(name);
+        if (n + 1 < source.length) await wait(ui.demo ? 0 : 350);
       }
-      await Promise.all(Array.from({ length: Math.min(3, source.length) }, one));
       await flushSave();
-      bulkNote = added
-        ? 'Added ' + added + ' from the grocery list.' + (missed ? ' ' + missed + ' had no Coles match.' : '')
-        : 'No Coles matches on the grocery list.';
+      const parts = [];
+      if (added) parts.push('Added ' + added + ' from the grocery list.');
+      if (missed.length) parts.push('Couldn’t match: ' + missed.join(', ') + '.');
+      if (unanswered.length) parts.push('Coles didn’t answer for: ' + unanswered.join(', ') + '.');
+      bulkNote = parts.join(' ') || 'Grocery list is empty.';
     } catch (err) {
       bulkNote = err.message;
     } finally {
