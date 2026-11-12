@@ -5,7 +5,8 @@
   import { demoSearch } from '../lib/groceries.js';
 
   // query is the add field. matching is set when an existing grocery line is being resolved.
-  let { query, matching = '', saving = false, onpick, onplain } = $props();
+  // store ('coles' or 'woolworths') limits the rows. onplain is omitted when a typed line isn't useful.
+  let { query, matching = '', saving = false, onpick, onplain = null, store = '' } = $props();
 
   let products = $state([]);
   let errors = $state([]);
@@ -33,16 +34,18 @@
     }
     searching = true;
     failed = '';
-    timer = setTimeout(() => run(q, ctrl.signal), 400);
+    const only = store;
+    timer = setTimeout(() => run(q, only, ctrl.signal), 400);
     return () => { clearTimeout(timer); ctrl.abort(); };
   });
 
-  async function run(q, signal) {
+  async function run(q, only, signal) {
     try {
       const data = ui.demo ? demoSearch(q) : await api('/api/groceries/search?q=' + encodeURIComponent(q), { signal });
       if (signal.aborted) return;
-      products = data.products || [];
-      errors = data.errors || [];
+      const all = data.products || [];
+      products = only ? all.filter((p) => p.store === only) : all;
+      errors = (data.errors || []).filter((err) => !only || err.store === only);
       failed = '';
       searching = false;
     } catch (err) {
@@ -60,10 +63,10 @@
     <p class="hint">
       {#if matching}Choose a product for “{matching}”.
       {:else if query.trim().length < 2}Type a product, like 2L milk.
-      {:else if searching}Searching Woolworths and Coles…
+      {:else if searching}{store === 'coles' ? 'Searching Coles…' : 'Searching Woolworths and Coles…'}
       {:else if failed}{failed}
-      {:else if !products.length}No matching products.
-      {:else}Tap a product to add it.{/if}
+      {:else if !products.length}{store === 'coles' ? 'No Coles products matched.' : 'No matching products.'}
+      {:else}{store === 'coles' ? 'Tap a Coles product to add it.' : 'Tap a product to add it.'}{/if}
     </p>
     {#each errors as err (err.store)}<p class="hint">{err.error}</p>{/each}
     <div class="results">
@@ -89,7 +92,7 @@
         </button>
       {/each}
     </div>
-    {#if !matching}
+    {#if onplain && !matching}
       <button type="button" class="as-typed" disabled={!query.trim() || saving} onclick={onplain}>
         <span>Add “{query.trim() || '…'}” as typed</span>
       </button>

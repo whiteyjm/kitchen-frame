@@ -8,6 +8,7 @@
   import Settings from './components/Settings.svelte';
   import Music from './views/Music.svelte';
   import Recipes from './views/Recipes.svelte';
+  import Delivery from './views/Delivery.svelte';
   import Message from './components/Message.svelte';
   import { connectHA, haConfigured } from './lib/ha.svelte.js';
   import { ui, clock, weather, photos, messages, start, startSlideshow, loadList, photosVisible } from './lib/state.svelte.js';
@@ -18,6 +19,7 @@
     { id: 'home', label: 'Home' },
     { id: 'calendar', label: 'Calendar' },
     { id: 'groceries', label: 'Groceries' },
+    { id: 'delivery', label: 'Delivery' },
     { id: 'todo', label: 'Tasks' },
     { id: 'recipes', label: 'Recipes' },
     // Music appears once the frame has a Home Assistant token (see docs/frame.md).
@@ -64,6 +66,7 @@
     {:else if ui.tab === 'music'}<Music />
     {:else if ui.tab === 'recipes'}<Recipes />
     {:else if ui.tab === 'groceries'}<List name="groceries" title="Groceries" accent="var(--orange)" accentText="var(--orange-text)" />
+    {:else if ui.tab === 'delivery'}<Delivery />
     {:else}<List name="todo" title="Tasks" accent="var(--blue)" accentText="var(--blue-text)" board />{/if}
     {/if}
   </main>

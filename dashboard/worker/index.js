@@ -2,6 +2,11 @@
 //   GET  /api/calendar               merged iCal feeds (cron refreshes them into KV every 10 min)
 //   GET  /api/weather                Open-Meteo current + 5-day (see weather.js)
 //   GET  /api/groceries/search?q=    Woolworths and Coles product search (see groceries.js)
+//   GET  /api/delivery/basket        Coles delivery basket (KV delivery:basket; see delivery.js)
+//   PUT  /api/delivery/basket        replace that basket ({ items })
+//   POST /api/delivery/submit        snapshot the basket to delivery:order:pending (status pending)
+//   GET  /api/delivery/pending       that order, for an assistant filling the real Coles cart
+//   POST /api/delivery/status        { status: pending | filled-in-cart | done }
 //   GET  /api/lists/:list            Todoist project tasks, list = groceries | todo (see todoist.js)
 //   POST /api/lists/:list            { content, description? } adds an item, or { items: [...] } several
 //   POST /api/lists/:list/:id        { content, description? } updates an item's title and note
@@ -26,6 +31,7 @@ import { expand, merge } from './calendar.js';
 import { getWeather } from './weather.js';
 import { LISTS, getList, addItem, updateItem, completeItem } from './todoist.js';
 import { searchGroceries } from './groceries.js';
+import { handleDelivery } from './delivery.js';
 import { listPhotos, photoResponse } from './photos.js';
 import { room } from './messages.js';
 export { MessageRoom } from './messages.js'; // Durable Object class (wrangler.jsonc)
@@ -101,6 +107,11 @@ export default {
         const found = await searchGroceries(env, url.searchParams.get('q'));
         if (found.error) return json({ error: found.error }, 400);
         return json({ query: found.query, products: found.products, errors: found.errors });
+      }
+
+      if (url.pathname.startsWith('/api/delivery/')) {
+        const handled = await handleDelivery(req, env, url);
+        if (handled) return json(handled.body, handled.status);
       }
 
       const [, , section, list, id, action] = url.pathname.split('/');

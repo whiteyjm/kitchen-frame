@@ -56,6 +56,20 @@ export function productDescription(product, existing = '') {
   return lines.join('\n').slice(0, 500);
 }
 
+// Coles product pages are /product/<slug>-<id> (brand, name and size, then the catalogue id).
+// The search API only returns the numeric id, so the slug is built the same way the website does.
+export function colesProductUrl(product) {
+  const id = String(product?.id ?? '').trim();
+  if (!/^[0-9]+$/.test(id)) return '';
+  const name = String(product.name || '').replace(/\s+/g, ' ').trim();
+  const brand = String(product.brand || '').replace(/\s+/g, ' ').trim();
+  const size = String(product.size || '').replace(/\s+/g, ' ').trim();
+  const withBrand = brand && !name.toLowerCase().startsWith(brand.toLowerCase()) ? brand + ' ' + name : name;
+  const titled = size && !withBrand.toLowerCase().includes(size.toLowerCase()) ? withBrand + ' ' + size : withBrand;
+  const slug = titled.toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 90);
+  return 'https://www.coles.com.au/product/' + (slug ? slug + '-' + id : id);
+}
+
 // Take one row from each store in turn so both shops appear at the top of the picker.
 export function mergeProducts(groups, limit = 12) {
   const lists = groups.filter(Array.isArray);
