@@ -117,42 +117,84 @@ async function write(env, key, value) {
   await env.CALENDAR.put(key, JSON.stringify(value));
 }
 
-const WEBHOOK_MS = 4000;
+const WEBHOOK_MS = 15000;
+const NOTIFY_KEY = 'delivery:notify';
+
+// A pasted "Authorization: Bearer …" or "Bearer …" still works. The raw secret is never logged.
+export function webhookKey(raw) {
+  let key = String(raw || '').trim();
+  key = key.replace(/^authorization:\s*/i, '').trim();
+  key = key.replace(/^bearer\s+/i, '').trim();
+  return key;
+}
+
+function webhookHost(url) {
+  try { return new URL(url).host; } catch { return ''; }
+}
+
+function timedOut(err) {
+  const name = err && err.name;
+  return name === 'TimeoutError' || name === 'AbortError';
+}
 
 // Tells the frame the assistant webhook is configured, without sending the URL or the key.
-function withNotify(env, body) {
+async function withNotify(env, body) {
   if (!body || !body.status) return body;
   if (!String(env.ORDER_WEBHOOK_URL || '').trim()) return body;
-  return { ...body, notify: true };
+  let notifyResult = null;
+  if (env.CALENDAR) {
+    try {
+      const rec = await env.CALENDAR.get(NOTIFY_KEY, 'json');
+      if (rec && typeof rec.ok === 'boolean') {
+        notifyResult = { ok: !!rec.ok, status: Number(rec.status) || 0, at: rec.at || null };
+      }
+    } catch { /* the flag still says the webhook is configured */ }
+  }
+  return { ...body, notify: true, ...(notifyResult ? { notifyResult } : {}) };
+}
+
+async function rememberNotify(env, outcome) {
+  if (!env.CALENDAR) return;
+  try { await env.CALENDAR.put(NOTIFY_KEY, JSON.stringify(outcome)); } catch (err) {
+    console.error(JSON.stringify({ msg: 'order webhook record', error: err && err.name || 'Error' }));
+  }
 }
 
 // Posts a short notice after a successful submit. No product lines and no dashboard key.
-// Errors are logged and swallowed so a dead webhook cannot fail the order.
+// Only a 2xx counts. A timeout or 5xx is tried once more. Failures are logged and swallowed.
 export async function notifyOrder(env, order) {
   const url = String(env.ORDER_WEBHOOK_URL || '').trim();
   if (!url) return;
-  const key = String(env.ORDER_WEBHOOK_KEY || '').trim();
+  const key = webhookKey(env.ORDER_WEBHOOK_KEY);
   const headers = { 'Content-Type': 'application/json' };
   if (key) {
     headers.Authorization = 'Bearer ' + key;
     headers['X-Webhook-Key'] = key;
   }
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        event: 'coles-order-submitted',
-        orderId: order.id,
-        createdAt: order.created,
-        itemCount: (order.items || []).length,
-      }),
-      signal: AbortSignal.timeout(WEBHOOK_MS),
-    });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-  } catch (err) {
-    console.error('order webhook', err);
+  const payload = JSON.stringify({
+    event: 'coles-order-submitted',
+    orderId: order.id,
+    createdAt: order.created,
+    itemCount: (order.items || []).length,
+  });
+  const host = webhookHost(url);
+  let outcome = { ok: false, status: 0, at: new Date().toISOString() };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const started = Date.now();
+    try {
+      const res = await fetch(url, { method: 'POST', headers, body: payload, signal: AbortSignal.timeout(WEBHOOK_MS) });
+      const ms = Date.now() - started;
+      console.log(JSON.stringify({ msg: 'order webhook', host, status: res.status, ms, attempt }));
+      outcome = { ok: res.status >= 200 && res.status < 300, status: res.status, at: new Date().toISOString() };
+      if (outcome.ok || res.status < 500 || attempt === 1) break;
+    } catch (err) {
+      const ms = Date.now() - started;
+      console.error(JSON.stringify({ msg: 'order webhook', host, status: 0, ms, attempt, error: timedOut(err) ? 'timeout' : 'fetch failed' }));
+      outcome = { ok: false, status: 0, at: new Date().toISOString() };
+      if (!timedOut(err) || attempt === 1) break;
+    }
   }
+  await rememberNotify(env, outcome);
 }
 
 // Returns { status, body } for a /api/delivery/* request, or null when the path isn't one of them.
@@ -190,11 +232,11 @@ export async function handleDelivery(req, env, url, ctx) {
     };
     await write(env, ORDER_KEY, order);
     if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(notifyOrder(env, order));
-    return { status: 200, body: withNotify(env, withStore(env, order)) };
+    return { status: 200, body: await withNotify(env, withStore(env, order)) };
   }
 
   if (path === '/api/delivery/pending' && req.method === 'GET') {
-    return { status: 200, body: withNotify(env, await readOrder(env)) };
+    return { status: 200, body: await withNotify(env, await readOrder(env)) };
   }
 
   if (path === '/api/delivery/status' && req.method === 'POST') {

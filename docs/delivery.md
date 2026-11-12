@@ -20,9 +20,11 @@ afterwards does not change the order until **Send again**.
 If `ORDER_WEBHOOK_URL` is set, a successful submit also POSTs
 `{"event":"coles-order-submitted","orderId","createdAt","itemCount"}` to that URL in the
 background (`Authorization: Bearer` and `X-Webhook-Key` from `ORDER_WEBHOOK_KEY`). The notice
-has no product lines. A failed webhook does not fail the submit. The pending order then includes
-`notify: true`, and the tab says Grok Bot will fill the trolley. Unset URL means no call and no
-`notify` flag.
+has no product lines. Only a 2xx counts; a timeout or 5xx is tried once more (15 seconds
+each). The last outcome is stored and returned on the pending order as
+`notifyResult: { ok, status, at }` next to `notify: true`. A failed webhook does not fail the
+submit. The tab says Grok Bot will fill the trolley only when the URL is set. Unset URL means
+no call and no `notify` flag.
 
 ## Endpoints
 

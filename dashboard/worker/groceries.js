@@ -207,6 +207,8 @@ async function fetchHtml(env, query, route) {
     return { products: [], blocked: true, pageSize: 0, total: 0, via: 'html' };
   }
   const html = await res.text();
+  // An Imperva challenge is a 200 HTML page, not a catalogue. Never treat it as products.
+  if (isChallenge(html)) return { products: [], blocked: true, status: res.status, pageSize: 0, total: 0, via: 'html' };
   const embedded = extractSearchResults(html);
   if (res.ok && embedded) return pageFrom(embedded, res.status, 'html');
   const buildId = buildIdFrom(html);
@@ -241,6 +243,11 @@ function colesHeaders(env, query, json) {
     Referer: COLES + '/search?q=' + encodeURIComponent(query),
     'ocp-apim-subscription-key': (env && env.COLES_SUBSCRIPTION_KEY) || COLES_KEY,
   };
+}
+
+export function isChallenge(text) {
+  const body = String(text || '');
+  return body.includes('Pardon Our Interruption') || body.includes('_Incapsula_');
 }
 
 export function extractSearchResults(html) {

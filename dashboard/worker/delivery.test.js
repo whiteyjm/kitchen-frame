@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from './index.js';
 import { colesProductUrl } from '../shared/product.js';
-import { sanitizeItems, subtotal, BASKET_KEY, ORDER_KEY } from './delivery.js';
+import { sanitizeItems, subtotal, BASKET_KEY, ORDER_KEY, webhookKey } from './delivery.js';
 
 const milk = {
   id: '8150288', store: 'coles', name: 'Full Cream Milk', brand: 'Coles', size: '3L', price: 3.4, quantity: 2,
@@ -118,14 +118,20 @@ test('submit posts a short webhook in the background and still succeeds when it 
   const kv = memoryKv();
   const waited = [];
   const posts = [];
+  assert.equal(webhookKey('Authorization: Bearer hook-secret'), 'hook-secret');
+  assert.equal(webhookKey('bearer hook-secret'), 'hook-secret');
+  assert.equal(webhookKey('hook-secret'), 'hook-secret');
   globalThis.fetch = async (url, init = {}) => {
     posts.push({ url: String(url), method: init.method, headers: init.headers, body: init.body });
     if (posts.length === 1) return new Response('no', { status: 500 });
-    throw new Error('webhook down');
+    if (posts.length === 2) return new Response(null, { status: 204 });
+    const err = new Error('timeout');
+    err.name = 'TimeoutError';
+    throw err;
   };
   const env = {
     DASHBOARD_KEY: 'dash-secret', CALENDAR: kv, COLES_STORE_ID: '4513',
-    ORDER_WEBHOOK_URL: 'https://hooks.example/coles', ORDER_WEBHOOK_KEY: 'hook-secret',
+    ORDER_WEBHOOK_URL: 'https://hooks.example/coles', ORDER_WEBHOOK_KEY: 'Authorization: Bearer hook-secret',
   };
   const ctx = { waitUntil: (p) => waited.push(p) };
   const put = await worker.fetch(new Request('https://frame.test/api/delivery/basket', {
@@ -144,8 +150,8 @@ test('submit posts a short webhook in the background and still succeeds when it 
   assert.equal(order.notify, true);
   assert.equal(order.status, 'pending');
   await Promise.all(waited);
-  assert.equal(posts.length, 1);
-  const note = JSON.parse(posts[0].body);
+  assert.equal(posts.length, 2);
+  const note = JSON.parse(posts[1].body);
   assert.deepEqual(Object.keys(note).sort(), ['createdAt', 'event', 'itemCount', 'orderId']);
   assert.equal(note.event, 'coles-order-submitted');
   assert.equal(note.orderId, order.id);
@@ -157,18 +163,24 @@ test('submit posts a short webhook in the background and still succeeds when it 
   assert.equal(JSON.stringify(posts[0].headers).includes('dash-secret'), false);
   const stored = JSON.parse(kv.stored.get(ORDER_KEY));
   assert.equal(stored.notify, undefined);
-  assert.equal((await (await worker.fetch(new Request('https://frame.test/api/delivery/pending', {
+  const pending = await (await worker.fetch(new Request('https://frame.test/api/delivery/pending', {
     headers: { Authorization: 'Bearer dash-secret' },
-  }), env, ctx)).json()).notify, true);
+  }), env, ctx)).json();
+  assert.equal(pending.notify, true);
+  assert.deepEqual([pending.notifyResult.ok, pending.notifyResult.status], [true, 204]);
+  assert.ok(pending.notifyResult.at);
 
-  // A thrown webhook is logged and does not change the saved order.
+  // A timeout is retried once. The order itself still succeeds.
   const again = await worker.fetch(new Request('https://frame.test/api/delivery/submit', {
     method: 'POST',
     headers: { Authorization: 'Bearer dash-secret' },
   }), env, ctx);
   assert.equal(again.status, 200);
   await Promise.all(waited);
-  assert.equal(posts.length, 2);
+  assert.equal(posts.length, 4);
+  const failed = JSON.parse(kv.stored.get('delivery:notify'));
+  assert.equal(failed.ok, false);
+  assert.equal(failed.status, 0);
 
   // No URL: nothing is posted, and the frame is not told to expect Grok Bot.
   delete env.ORDER_WEBHOOK_URL;
@@ -180,5 +192,5 @@ test('submit posts a short webhook in the background and still succeeds when it 
   assert.equal(quiet.status, 200);
   assert.equal(quietBody.notify, undefined);
   await Promise.all(waited);
-  assert.equal(posts.length, 2);
+  assert.equal(posts.length, 4);
 });

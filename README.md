@@ -138,15 +138,19 @@ filled. See [docs/delivery.md](docs/delivery.md).
 Optional secrets (unset means no call is made): `npx wrangler secret put ORDER_WEBHOOK_URL`
 and `ORDER_WEBHOOK_KEY`. After a successful send the Worker POSTs
 `{"event":"coles-order-submitted","orderId","createdAt","itemCount"}` to that URL in the
-background, with the key as `Authorization: Bearer` and `X-Webhook-Key`. The body has no
-product lines and no dashboard key. When the URL is set, the Delivery tab says Grok Bot will
-fill the Coles trolley.
+background, with the key as `Authorization: Bearer` and `X-Webhook-Key`. A pasted
+`Authorization:` or `Bearer` prefix on the secret is stripped. Only a 2xx counts; a timeout
+or a 5xx is retried once (15 seconds each). The last outcome is on the pending order as
+`notifyResult`. The body has no product lines and no dashboard key. When the URL is set, the
+Delivery tab says Grok Bot will fill the Coles trolley.
 
 Coles blocks the Worker’s own address. `relay/` on the kitchen laptop proxies catalogue
 GETs and registers a Cloudflare quick tunnel with `RELAY_KEY` (`npx wrangler secret put RELAY_KEY`,
 the same value as `relay/.env`). While the laptop has checked in within 10 minutes, searches
 go through it first and fall back to a direct fetch. A direct HTTP 403 skips direct calls
-for 15 minutes. Successful searches are cached for 24 hours and kept when a refresh fails.
+for 15 minutes. The laptop refreshes its Imperva cookies about every 20 minutes, retries a
+failed fetch once, and answers 503 when Coles returns an Incapsula challenge page so that
+page is not cached. Successful searches are cached for 24 hours and kept when a refresh fails.
 If a search fails and the laptop is offline, the picker says the laptop needs to be on.
 See `relay/install.ps1`.
 
