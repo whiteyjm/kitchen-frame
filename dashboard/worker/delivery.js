@@ -117,8 +117,46 @@ async function write(env, key, value) {
   await env.CALENDAR.put(key, JSON.stringify(value));
 }
 
+const WEBHOOK_MS = 4000;
+
+// Tells the frame the assistant webhook is configured, without sending the URL or the key.
+function withNotify(env, body) {
+  if (!body || !body.status) return body;
+  if (!String(env.ORDER_WEBHOOK_URL || '').trim()) return body;
+  return { ...body, notify: true };
+}
+
+// Posts a short notice after a successful submit. No product lines and no dashboard key.
+// Errors are logged and swallowed so a dead webhook cannot fail the order.
+export async function notifyOrder(env, order) {
+  const url = String(env.ORDER_WEBHOOK_URL || '').trim();
+  if (!url) return;
+  const key = String(env.ORDER_WEBHOOK_KEY || '').trim();
+  const headers = { 'Content-Type': 'application/json' };
+  if (key) {
+    headers.Authorization = 'Bearer ' + key;
+    headers['X-Webhook-Key'] = key;
+  }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        event: 'coles-order-submitted',
+        orderId: order.id,
+        createdAt: order.created,
+        itemCount: (order.items || []).length,
+      }),
+      signal: AbortSignal.timeout(WEBHOOK_MS),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+  } catch (err) {
+    console.error('order webhook', err);
+  }
+}
+
 // Returns { status, body } for a /api/delivery/* request, or null when the path isn't one of them.
-export async function handleDelivery(req, env, url) {
+export async function handleDelivery(req, env, url, ctx) {
   if (!env.CALENDAR) return { status: 503, body: { error: 'KV unavailable' } };
   const path = url.pathname;
 
@@ -143,6 +181,7 @@ export async function handleDelivery(req, env, url) {
     if (!basket.items.length) return { status: 400, body: { error: 'basket is empty' } };
     const now = new Date().toISOString();
     const order = {
+      id: crypto.randomUUID(),
       status: 'pending',
       created: now,
       updated: now,
@@ -150,11 +189,12 @@ export async function handleDelivery(req, env, url) {
       subtotal: basket.subtotal,
     };
     await write(env, ORDER_KEY, order);
-    return { status: 200, body: withStore(env, order) };
+    if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(notifyOrder(env, order));
+    return { status: 200, body: withNotify(env, withStore(env, order)) };
   }
 
   if (path === '/api/delivery/pending' && req.method === 'GET') {
-    return { status: 200, body: await readOrder(env) };
+    return { status: 200, body: withNotify(env, await readOrder(env)) };
   }
 
   if (path === '/api/delivery/status' && req.method === 'POST') {

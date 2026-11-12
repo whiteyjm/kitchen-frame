@@ -5,6 +5,7 @@
 //   GET  /api/delivery/basket        Coles delivery basket (KV delivery:basket; see delivery.js)
 //   PUT  /api/delivery/basket        replace that basket ({ items })
 //   POST /api/delivery/submit        snapshot the basket to delivery:order:pending (status pending)
+//                                    and, if ORDER_WEBHOOK_URL is set, notify that URL in the background
 //   GET  /api/delivery/pending       that order, for an assistant filling the real Coles cart
 //   POST /api/delivery/status        { status: pending | filled-in-cart | done }
 //   GET  /api/lists/:list            Todoist project tasks, list = groceries | todo (see todoist.js)
@@ -26,6 +27,8 @@
 //   TODOIST_TOKEN  Todoist API token.
 //   ALBUM_URL      iCloud shared album link with Public Website on.
 //   AGENT_TOKEN    lets AI agents post messages and save recipes; it can't read anything.
+//   ORDER_WEBHOOK_URL  optional. When set, a successful Coles submit POSTs a short notice here.
+//   ORDER_WEBHOOK_KEY  optional bearer sent with that notice (Authorization and X-Webhook-Key).
 // Optional: DISPLAY_TZ  IANA zone for times with no TZID and no X-WR-TIMEZONE (default UTC).
 import { clampQty } from '../shared/product.js';
 import { expand, merge } from './calendar.js';
@@ -116,7 +119,7 @@ export default {
       }
 
       if (url.pathname.startsWith('/api/delivery/')) {
-        const handled = await handleDelivery(req, env, url);
+        const handled = await handleDelivery(req, env, url, ctx);
         if (handled) return json(handled.body, handled.status);
       }
 

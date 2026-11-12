@@ -135,6 +135,13 @@ The Delivery tab reuses that search for a Coles basket (quantity, line totals, s
 assistant with the dashboard key reads the order, fills the real Coles cart, and marks it
 filled. See [docs/delivery.md](docs/delivery.md).
 
+Optional secrets (unset means no call is made): `npx wrangler secret put ORDER_WEBHOOK_URL`
+and `ORDER_WEBHOOK_KEY`. After a successful send the Worker POSTs
+`{"event":"coles-order-submitted","orderId","createdAt","itemCount"}` to that URL in the
+background, with the key as `Authorization: Bearer` and `X-Webhook-Key`. The body has no
+product lines and no dashboard key. When the URL is set, the Delivery tab says Grok Bot will
+fill the Coles trolley.
+
 ## Messages from agents
 
 AI agents can post full-screen messages to the frame: see [docs/messages.md](docs/messages.md).
