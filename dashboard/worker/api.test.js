@@ -1,7 +1,6 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from './index.js';
-import { resetGrocerySessions } from './groceries.js';
 import { shape } from './weather.js';
 import { MessageRoom } from './messages.js';
 
@@ -88,7 +87,7 @@ test('to-dos: dated first, overdue on top', async () => {
 
 test('add and complete items', async () => {
   const added = await (await req('/api/lists/groceries', { method: 'POST', body: JSON.stringify({ content: '  Bread ' }) })).json();
-  assert.deepEqual(added, { id: 'new', content: 'Bread' });
+  assert.deepEqual(added, { id: 'new', content: 'Bread', quantity: 1 });
   assert.equal(JSON.parse(calls.find((c) => c.method === 'POST').body).project_id, 'p2');
   const done = await req('/api/lists/groceries/t1/done', { method: 'POST' });
   assert.equal(done.status, 200);
@@ -323,23 +322,15 @@ test('calendar cron writes KV only when events change, or hourly', async () => {
   assert.equal(await run(null), 1); // first run
 });
 
-test('grocery search: key, short query, and a normalised product from each store', async () => {
-  resetGrocerySessions();
+test('grocery search: key, short query, and a normalised Coles product', async () => {
   assert.equal((await worker.fetch(new Request('https://frame.test/api/groceries/search?q=milk'), env, {})).status, 401);
   assert.equal((await req('/api/groceries/search?q=a')).status, 400);
 
-  globalThis.fetch = async (url, init = {}) => {
+  globalThis.fetch = async (url) => {
     const u = String(url);
-    if (u.includes('woolworths.com.au') && init.method === 'POST') {
-      return Response.json({ Products: [{ Products: [{
-        Stockcode: 888, DisplayName: 'Pura Milk 2L', Brand: 'Pura', PackageSize: '2L', Price: 4.5,
-        CupString: '$2.25 / 1L', SmallImageFile: 'https://cdn0.woolworths.media/content/wowproductimages/small/888.jpg',
-        UrlFriendlyName: 'pura-milk', IsInStock: true,
-      }] }] });
-    }
-    if (u.includes('woolworths.com.au')) return Response.json({});
+    assert.equal(u.includes('woolworths.com.au'), false);
     if (u.includes('coles.com.au')) {
-      return Response.json({ results: [
+      return Response.json({ pageSize: 20, results: [
         { _type: 'SINGLE_TILE', id: 9, name: 'Ad' },
         { _type: 'PRODUCT', id: 439693, name: 'Full Cream Milk', brand: 'Coles', size: '2L', availability: true, pricing: { now: 3.4, comparable: '$1.70 / 1L' }, imageUris: [{ uri: '/4/439693.jpg' }] },
       ] });
@@ -348,9 +339,8 @@ test('grocery search: key, short query, and a normalised product from each store
   };
   const body = await (await req('/api/groceries/search?q=' + encodeURIComponent('  2L milk '))).json();
   assert.equal(body.query, '2L milk');
-  assert.deepEqual(body.products.map((p) => [p.store, p.priceLabel, p.size]), [['woolworths', '$4.50', '2L'], ['coles', '$3.40', '2L']]);
-  assert.equal(body.products[0].url, 'https://www.woolworths.com.au/shop/productdetails/888/pura-milk');
-  assert.equal(body.products[1].image, 'https://cdn.productimages.coles.com.au/productimages/4/439693.jpg');
+  assert.deepEqual(body.products.map((p) => [p.store, p.priceLabel, p.size]), [['coles', '$3.40', '2L']]);
+  assert.equal(body.products[0].image, 'https://cdn.productimages.coles.com.au/productimages/4/439693.jpg');
   assert.deepEqual(body.errors, []);
   assert.equal(body.products.some((p) => p.name === 'Ad'), false);
 });
@@ -358,12 +348,47 @@ test('grocery search: key, short query, and a normalised product from each store
 test('updating a grocery item keeps the product note on the task', async () => {
   const description = 'Coles · $3.40 · 2L\nstore: coles\nsku: 439693\nprice: 3.40\nurl: https://www.coles.com.au/product/439693';
   const updated = await (await req('/api/lists/groceries/t1', { method: 'POST', body: JSON.stringify({ content: 'Coles Full Cream Milk 2L', description }) })).json();
-  assert.deepEqual(updated, { id: 't1', content: 'Coles Full Cream Milk 2L', note: 'Coles · $3.40 · 2L' });
+  assert.deepEqual(updated, { id: 't1', content: 'Coles Full Cream Milk 2L', quantity: 1, note: 'Coles · $3.40 · 2L' });
   const post = calls.find((c) => c.method === 'POST' && c.path === '/api/v1/tasks/t1');
   assert.equal(JSON.parse(post.body).description, description);
 
   const added = await (await req('/api/lists/groceries', { method: 'POST', body: JSON.stringify({ content: 'Pura Milk 2L', description: 'Woolworths · $4.50 · 2L\nsku: 888' }) })).json();
   assert.equal(added.note, 'Woolworths · $4.50 · 2L');
+  assert.equal(added.quantity, 1);
+});
+
+test('grocery quantity is stored as a title suffix and a qty line', async () => {
+  const tasks = new Map([['t1', { id: 't1', content: 'Milk', description: 'Coles · $3.40 · 2L\nsku: 439693' }]]);
+  globalThis.fetch = async (url, init = {}) => {
+    const u = new URL(url);
+    const id = u.pathname.split('/').pop();
+    if (u.pathname.startsWith('/api/v1/tasks/') && (!init.method || init.method === 'GET')) {
+      return Response.json(tasks.get(id));
+    }
+    if (u.pathname.startsWith('/api/v1/tasks/') && init.method === 'POST') {
+      const body = JSON.parse(init.body);
+      const next = { ...tasks.get(id), ...body };
+      tasks.set(id, next);
+      return Response.json(next);
+    }
+    return new Response('no', { status: 404 });
+  };
+  const up = await (await req('/api/lists/groceries/t1', { method: 'POST', body: JSON.stringify({ quantity: 2 }) })).json();
+  assert.deepEqual([up.content, up.quantity], ['Milk', 2]);
+  assert.equal(tasks.get('t1').content, 'Milk ×2');
+  assert.match(tasks.get('t1').description, /^Coles · \$3\.40 · 2L\nqty: 2\nsku: 439693$/);
+  const down = await (await req('/api/lists/groceries/t1', { method: 'POST', body: JSON.stringify({ quantity: 1 }) })).json();
+  assert.deepEqual([down.content, down.quantity, tasks.get('t1').content], ['Milk', 1, 'Milk']);
+  assert.equal(tasks.get('t1').description.includes('qty:'), false);
+  assert.equal((await req('/api/lists/groceries/t1', { method: 'POST', body: JSON.stringify({ quantity: 'nope' }) })).status, 400);
+
+  const { sortTasks } = await import('./todoist.js');
+  const items = sortTasks([
+    { id: '1', content: 'Milk ×2', description: 'Coles · $3\nqty: 9', child_order: 1 },
+    { id: '2', content: 'Eggs', description: '', child_order: 2 },
+    { id: '3', content: 'Rice', description: 'qty: 4', child_order: 3 },
+  ], 'groceries');
+  assert.deepEqual(items.map((i) => [i.content, i.quantity]), [['Milk', 2], ['Eggs', 1], ['Rice', 4]]);
 });
 
 test('messages: posts and dismissals are pushed to connected frames at once; expiry sets an alarm', async () => {

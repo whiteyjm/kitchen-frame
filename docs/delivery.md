@@ -1,6 +1,6 @@
 # Coles delivery
 
-The Delivery tab builds a Coles order. Search works like Groceries (the same Woolworths and Coles
+The Delivery tab builds a Coles order. Search works like Groceries (the same Coles
 picker, Coles rows only). Tapping a product stores it in a basket: catalogue id, name, size,
 price, image and quantity. **+** and **−** change the quantity, and the trash button removes a
 line. The subtotal is the sum of the priced lines.
@@ -11,8 +11,8 @@ out, or pay. It snapshots the basket so an assistant can add those products to t
 cart in a browser, then mark the order filled.
 
 **Add grocery list** searches Coles for each Todoist grocery line (up to 30) and adds the top
-match. Lines with no Coles match are skipped. Demo mode keeps the basket on the frame and does
-not call the shops or write KV.
+match, using that line’s quantity (a “ ×2” on the title). Lines with no Coles match are skipped.
+Demo mode keeps the basket on the frame and does not call the shop or write KV.
 
 The basket is replaced as a whole on each save. The pending order is a copy: editing the basket
 afterwards does not change the order until **Send again**.

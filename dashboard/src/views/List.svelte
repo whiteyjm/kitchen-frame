@@ -2,8 +2,8 @@
   import Icon from '../components/Icon.svelte';
   import TaskRow from '../components/TaskRow.svelte';
   import ProductPicker from '../components/ProductPicker.svelte';
-  import { clock, lists, completeItem, addItem, updateItem } from '../lib/state.svelte.js';
-  import { productTitle, productDescription } from '../../shared/product.js';
+  import { clock, lists, completeItem, addItem, updateItem, setQuantity } from '../lib/state.svelte.js';
+  import { productTitle, productDescription, withQuantity, setDescriptionQuantity, groceryQuantity, groceryName } from '../../shared/product.js';
   // board: Tasks, one card per Todoist section. Otherwise (Groceries) one card, items in columns,
   // grouped under section names when the project has sections.
   let { name, title, accent, accentText, board = false } = $props();
@@ -41,7 +41,7 @@
   function closeAdd() { adding = false; draft = ''; resolving = null; }
   function openResolve(item) {
     resolving = item;
-    draft = item.content;
+    draft = groceryName(item);
     adding = true;
     requestAnimationFrame(() => field && field.focus());
   }
@@ -57,8 +57,9 @@
   }
   async function choose(product) {
     if (saving) return;
-    const content = productTitle(product);
-    const description = productDescription(product, resolving ? resolving.note : '');
+    const qty = resolving ? groceryQuantity(resolving) : 1;
+    const content = withQuantity(productTitle(product), qty);
+    const description = setDescriptionQuantity(productDescription(product, resolving ? resolving.note : ''), qty);
     saving = true;
     const ok = resolving
       ? await updateItem(name, resolving, content, description)
@@ -101,7 +102,7 @@
     {#if loose.length}
       <div class="sheet loose" style="--cols:{Math.min(3, Math.max(1, Math.ceil(loose.length / 3)))}">
         {#each loose as item (item.id)}
-          <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} onpick={name === 'groceries' ? openResolve : undefined} />
+          <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} onpick={name === 'groceries' ? openResolve : undefined} onqty={name === 'groceries' ? (i, n) => setQuantity(name, i, n) : undefined} />
         {/each}
       </div>
     {/if}
@@ -112,7 +113,7 @@
           <h2>{g.name}<span class="num">{g.items.length}</span></h2>
           <div class="card-items">
             {#each g.items as item (item.id)}
-              <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} onpick={name === 'groceries' ? openResolve : undefined} />
+              <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} onpick={name === 'groceries' ? openResolve : undefined} onqty={name === 'groceries' ? (i, n) => setQuantity(name, i, n) : undefined} />
             {:else}
               <p class="none">No {noun[1]}</p>
             {/each}
@@ -127,7 +128,7 @@
         <section class="group">
           {#if g.name}<h2>{g.name}</h2>{/if}
           {#each g.items as item (item.id)}
-            <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} onpick={name === 'groceries' ? openResolve : undefined} />
+            <TaskRow {item} now={clock.now} person={who(item)} lines={false} ondone={(i) => completeItem(name, i)} onpick={name === 'groceries' ? openResolve : undefined} onqty={name === 'groceries' ? (i, n) => setQuantity(name, i, n) : undefined} />
           {/each}
         </section>
       {/each}
@@ -164,8 +165,8 @@
   .card-items { min-height: 0; overflow-y: auto; }
   .none { margin: 8px 0 10px; font-size: 18px; color: var(--secondary); }
 
-  /* Groceries: one card, items flowing into columns; sections become small headed groups. */
-  .flow { align-self: stretch; max-height: 100%; overflow-y: auto; padding: 16px 26px 14px; border-radius: 22px; column-count: 3; column-gap: 36px; }
+  /* Groceries: one card, items in two columns so the quantity buttons stay on the row. */
+  .flow { align-self: stretch; max-height: 100%; overflow-y: auto; padding: 16px 26px 14px; border-radius: 22px; column-count: 2; column-gap: 48px; }
   .group { break-inside: avoid; margin-bottom: 10px; }
   .group h2 { margin-top: 6px; color: var(--accent-text); }
 

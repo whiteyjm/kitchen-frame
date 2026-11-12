@@ -2,14 +2,16 @@
   import Icon from './Icon.svelte';
   import Avatar from './Avatar.svelte';
   import { dueLabel } from '../lib/format.js';
-  import { isProductNote } from '../../shared/product.js';
+  import { isProductNote, groceryName, groceryQuantity } from '../../shared/product.js';
   // person: assignee's name (shared projects); section: section name, shown with the due date and
   // the item's note (its Todoist description, e.g. "For: Beef Mandi") on the small line underneath.
   // lines: the iOS inset separator under each row (off inside the Tasks/Groceries cards).
-  let { item, now, ondone, person = null, section = null, lines = true, onpick = null } = $props();
+  let { item, now, ondone, person = null, section = null, lines = true, onpick = null, onqty = null } = $props();
   let checking = $state(false);
   let due = $derived(item.due ? dueLabel(item.due, now) : '');
   let rest = $derived([section, item.note].filter(Boolean).join(' · '));
+  let label = $derived(groceryName(item));
+  let qty = $derived(groceryQuantity(item));
 
   // The ring fills first, then the row goes, so a tap feels confirmed.
   function tap() {
@@ -20,16 +22,23 @@
 </script>
 
 <div class="row" class:checking class:plain={!lines}>
-  <button class="hit" onclick={tap} aria-label={'Complete ' + item.content}>
+  <button class="hit" onclick={tap} aria-label={'Complete ' + label}>
     <span class="ring">{#if checking}<Icon name="check" size={17} />{/if}</span>
     <span class="body">
       <span class="main">
-        <span class="text">{item.content}</span>
+        <span class="text">{label}</span>
         {#if due || rest}<span class="due"><span class:late={due === 'Overdue'}>{due}</span>{due && rest ? ' · ' : ''}{rest}</span>{/if}
       </span>
       {#if person}<Avatar id={item.assignee} name={person} size={30} />{/if}
     </span>
   </button>
+  {#if onqty}
+    <span class="qty">
+      <button type="button" class="step" aria-label={'Fewer ' + label} disabled={qty <= 1} onclick={() => onqty(item, qty - 1)}>−</button>
+      <span class="n num">{qty}</span>
+      <button type="button" class="step" aria-label={'More ' + label} disabled={qty >= 99} onclick={() => onqty(item, qty + 1)}>+</button>
+    </span>
+  {/if}
   {#if onpick && !isProductNote(item.note)}
     <button type="button" class="match" onclick={() => onpick(item)} aria-label={'Find a product for ' + item.content}>Pick</button>
   {/if}
@@ -41,6 +50,11 @@
   .hit:active .text { opacity: .6; }
   .match { flex: none; align-self: center; height: 44px; margin: 8px 0 0 8px; padding: 0 14px; border-radius: 22px; background: var(--ground); color: var(--accent-text, var(--blue-text)); font-size: 16px; font-weight: 600; }
   .match:active { opacity: .7; }
+  .qty { flex: none; display: flex; align-items: center; gap: 4px; margin: 4px 0 0 8px; }
+  .step { width: 44px; height: 44px; border-radius: 22px; background: var(--ground); display: grid; place-items: center; font-size: 26px; font-weight: 500; line-height: 1; }
+  .step:disabled { opacity: .35; }
+  .step:active { opacity: .7; }
+  .n { width: 28px; text-align: center; font-size: 20px; font-weight: 700; }
   .ring { flex: none; width: 26px; height: 26px; margin-top: 1px; border-radius: 50%; border: 2px solid var(--ring); display: grid; place-items: center; color: #fff; transition: background-color .15s ease-out, border-color .15s ease-out; }
   .checking .ring { background: var(--accent); border-color: var(--accent); }
   .checking .text { color: var(--secondary); }

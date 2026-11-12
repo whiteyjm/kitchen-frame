@@ -1,7 +1,7 @@
 // Grocery and to-do lists from Todoist (API v1), proxied so the token never reaches the frame.
 // Secret: TODOIST_TOKEN (Todoist → Settings → Integrations → Developer → API token).
 // Vars: TODOIST_GROCERY_PROJECT, TODOIST_TODO_PROJECT (project names, default "Groceries" / "To-do").
-import { visibleNote } from '../shared/product.js';
+import { visibleNote, splitQuantity, withQuantity, quantityFromDescription, setDescriptionQuantity, clampQty } from '../shared/product.js';
 
 const API = 'https://api.todoist.com/api/v1';
 export const LISTS = { groceries: 'TODOIST_GROCERY_PROJECT', todo: 'TODOIST_TODO_PROJECT' };
@@ -87,19 +87,28 @@ export function sortTasks(tasks, list) {
       }
       return (a.child_order ?? 0) - (b.child_order ?? 0);
     })
-    .map((t) => ({
-      id: t.id,
-      content: t.content,
-      ...(t.due?.date ? { due: t.due.date.slice(0, 10) } : {}),
-      ...(t.section_id ? { section: t.section_id } : {}),
-      ...(t.responsible_uid ? { assignee: String(t.responsible_uid) } : {}),
-      ...(visibleNote(t.description) ? { note: visibleNote(t.description) } : {}),
-    }));
+    .map((t) => taskView(t.id, t.content, t.description, t));
+}
+
+// Title suffix " ×2" wins; otherwise a qty line in the description. One is stored as a bare title.
+function taskView(id, content, description, extra) {
+  const parsed = splitQuantity(content);
+  const fromNote = quantityFromDescription(description);
+  const quantity = parsed.quantity > 1 ? parsed.quantity : fromNote;
+  const note = visibleNote(description);
+  return {
+    id,
+    content: parsed.name,
+    quantity,
+    ...(extra && extra.due?.date ? { due: extra.due.date.slice(0, 10) } : {}),
+    ...(extra && extra.section_id ? { section: extra.section_id } : {}),
+    ...(extra && extra.responsible_uid ? { assignee: String(extra.responsible_uid) } : {}),
+    ...(note ? { note } : {}),
+  };
 }
 
 function shaped(id, content, description) {
-  const note = visibleNote(description);
-  return { id, content, ...(note ? { note } : {}) };
+  return taskView(id, content, description);
 }
 
 // description is Todoist's note under the task (e.g. "For: Chicken Fried Rice", or a product line).
@@ -118,6 +127,19 @@ export async function updateItem(env, id, content, description) {
     body: JSON.stringify({ content, description: description || '' }),
   });
   return shaped(t.id, t.content, description);
+}
+
+// Reads the task so the product note stays, then writes the quantity onto the title and description.
+export async function setItemQuantity(env, id, quantity) {
+  const n = clampQty(quantity) || 1;
+  const current = await call(env, '/tasks/' + encodeURIComponent(id));
+  const content = withQuantity(current.content, n);
+  const description = setDescriptionQuantity(current.description || '', n);
+  await call(env, '/tasks/' + encodeURIComponent(id), {
+    method: 'POST',
+    body: JSON.stringify({ content, description }),
+  });
+  return shaped(id, content, description);
 }
 
 export async function completeItem(env, id) {

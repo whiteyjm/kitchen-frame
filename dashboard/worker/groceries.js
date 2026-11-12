@@ -1,28 +1,19 @@
-// Product search for the Groceries tab. The frame never talks to Woolworths or Coles itself:
-// this proxy fans out, normalises a few fields, and caches them briefly. Nothing here logs in
-// or checks out. Prices are a guide for the list, not a cart.
+// Product search for Groceries and Delivery. The frame never talks to Coles itself: this proxy
+// normalises a few fields and caches them briefly. Nothing here logs in or checks out.
 //
 // Coles: public website BFF (the subscription key is the one shipped in coles.com.au, not a
-// household secret). Store prices follow COLES_STORE_ID (default 0584).
-// Woolworths: POST /apis/ui/Search/products after a bootstrap cookie. Akamai often refuses
-// datacenter addresses; that store then drops out and Coles (or a plain typed item) still works.
-// Woolworths prices are whatever catalogue the anonymous session gets. There is no postcode.
-import { mergeProducts, money } from '../shared/product.js';
+// household secret). Store prices follow COLES_STORE_ID (default 0584). Woolworths is not called.
+import { money } from '../shared/product.js';
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 const WW = 'https://www.woolworths.com.au';
 const COLES = 'https://www.coles.com.au';
 // Public client key from the Coles website. Override with COLES_SUBSCRIPTION_KEY when it rotates.
 const COLES_KEY = 'eae83861d1cd4de6bb9cd8a2cd6f041e';
-const PER_STORE = 8;
+// The picker used to keep 8 Coles rows. It now keeps 20 more.
+export const COLES_RESULTS = 28;
 const CACHE_S = 600;
 const FETCH_MS = 8000;
-
-let wwSession = null; // { cookie, at } for this isolate
-
-export function resetGrocerySessions() {
-  wwSession = null;
-}
 
 export function cleanQuery(q) {
   return String(q || '').replace(/[\u0000-\u001f]/g, '').trim().replace(/\s+/g, ' ').slice(0, 80);
@@ -31,51 +22,57 @@ export function cleanQuery(q) {
 export async function searchGroceries(env, raw) {
   const query = cleanQuery(raw);
   if (query.length < 2) return { error: 'query too short' };
-  const [woolworths, coles] = await Promise.all([
-    runStore('woolworths', () => searchWoolworths(env, query)),
-    runStore('coles', () => searchColes(env, query)),
-  ]);
-  return {
-    query,
-    products: mergeProducts([woolworths.products, coles.products]),
-    errors: [woolworths.error, coles.error].filter(Boolean),
-  };
-}
-
-async function runStore(store, fn) {
   try {
-    return { products: await fn() };
+    return { query, products: await searchColes(env, query), errors: [] };
   } catch (err) {
-    console.error('grocery ' + store, err);
-    const name = store === 'woolworths' ? 'Woolworths' : 'Coles';
-    return { products: [], error: { store, error: name + ' is unavailable right now.' } };
+    console.error('grocery coles', err);
+    return { query, products: [], errors: [{ store: 'coles', error: 'Coles is unavailable right now.' }] };
   }
-}
-
-async function searchWoolworths(env, query) {
-  const key = 'groc:v1:ww:' + encodeURIComponent(query.toLowerCase());
-  const hit = await readCache(env, key);
-  if (hit) return hit;
-  const cookie = await wwCookie(false);
-  const first = await wwSearch(query, cookie);
-  // A real session cookie that was rejected is worth one fresh bootstrap. A bare Akamai
-  // cookie is not a session, and retrying it just doubles the block.
-  let found = first.products;
-  if (!found && /(?:^|; )(?:w-rctx|wow-auth-token)=/.test(cookie)) found = (await wwSearch(query, await wwCookie(true))).products;
-  if (!found) throw new Error('Woolworths blocked the search' + (first.status ? ' (HTTP ' + first.status + ')' : ''));
-  await writeCache(env, key, found);
-  return found;
 }
 
 async function searchColes(env, query) {
   const storeId = String(env.COLES_STORE_ID || '0584');
-  const key = 'groc:v1:coles:' + storeId + ':' + encodeURIComponent(query.toLowerCase());
+  const key = 'groc:v2:coles:' + storeId + ':' + encodeURIComponent(query.toLowerCase());
   const hit = await readCache(env, key);
   if (hit) return hit;
+  const products = [];
+  const seen = new Set();
+  let start = 0;
+  // Coles answers one page at a time (pageSize is often 20, and a page can also run long).
+  // Keep asking while a full page comes back and we still need rows.
+  for (let page = 0; page < 4 && products.length < COLES_RESULTS; page++) {
+    let data;
+    try {
+      data = await fetchColesPage(env, query, storeId, start);
+    } catch (err) {
+      if (!products.length) throw err;
+      break;
+    }
+    const batch = normalizeColes(data);
+    let added = 0;
+    for (const product of batch) {
+      if (!product.id || seen.has(product.id)) continue;
+      seen.add(product.id);
+      products.push(product);
+      added++;
+      if (products.length >= COLES_RESULTS) break;
+    }
+    if (!added) break;
+    const pageSize = Number(data && data.pageSize);
+    const step = pageSize > 0 ? pageSize : batch.length;
+    if (!step || batch.length < step) break;
+    start += step;
+  }
+  const out = products.slice(0, COLES_RESULTS);
+  await writeCache(env, key, out);
+  return out;
+}
+
+async function fetchColesPage(env, query, storeId, start) {
   const url = new URL(COLES + '/api/bff/products/search');
   url.searchParams.set('storeId', storeId);
   url.searchParams.set('searchTerm', query);
-  url.searchParams.set('start', '0');
+  url.searchParams.set('start', String(start));
   url.searchParams.set('sortBy', 'relevance');
   url.searchParams.set('excludeAds', 'true');
   const res = await fetch(url, {
@@ -93,74 +90,7 @@ async function searchColes(env, query) {
   if (!res.ok || !data || !Array.isArray(data.results)) {
     throw new Error(!res.ok ? 'Coles search failed (HTTP ' + res.status + ')' : 'Coles blocked the search');
   }
-  const products = normalizeColes(data).slice(0, PER_STORE);
-  await writeCache(env, key, products);
-  return products;
-}
-
-function wwBody(query) {
-  return {
-    Filters: [],
-    IsSpecial: false,
-    Location: '/shop/search/products?searchTerm=' + encodeURIComponent(query),
-    PageNumber: 1,
-    PageSize: 24,
-    SearchTerm: query,
-    SortType: 'TraderRelevance',
-    IsHideEverydayMarketProducts: false,
-    ExcludeSearchTypes: ['UntraceableVendors'],
-    GroupEdmVariants: false,
-    EnableAdReRanking: false,
-  };
-}
-
-async function wwSearch(query, cookie) {
-  const res = await fetch(WW + '/apis/ui/Search/products', {
-    method: 'POST',
-    signal: AbortSignal.timeout(FETCH_MS),
-    headers: wwHeaders(cookie, true),
-    body: JSON.stringify(wwBody(query)),
-  });
-  const data = await readJson(res);
-  if (!res.ok || !data || (!Array.isArray(data.Products) && !Array.isArray(data.products))) return { products: null, status: res.status };
-  return { products: normalizeWoolworths(data).slice(0, PER_STORE), status: res.status };
-}
-
-async function wwCookie(force) {
-  if (!force && wwSession && wwSession.cookie && Date.now() - wwSession.at < 20 * 60 * 1000) return wwSession.cookie;
-  const jar = new Map();
-  const boot = await fetch(WW + '/api/ui/v2/bootstrap', { signal: AbortSignal.timeout(FETCH_MS), headers: wwHeaders('', false) });
-  absorbCookies(boot, jar);
-  await readJson(boot);
-  if (jar.size === 0) {
-    const home = await fetch(WW + '/', { signal: AbortSignal.timeout(FETCH_MS), headers: { ...wwHeaders('', false), Accept: 'text/html' } });
-    absorbCookies(home, jar);
-    await home.arrayBuffer().catch(() => {});
-  }
-  const cookie = [...jar.entries()].map(([k, v]) => k + '=' + v).join('; ');
-  wwSession = cookie ? { cookie, at: Date.now() } : null;
-  return cookie;
-}
-
-function wwHeaders(cookie, json) {
-  return {
-    Accept: json ? 'application/json, text/plain, */*' : 'application/json, text/html',
-    'Accept-Language': 'en-AU,en;q=0.9',
-    'User-Agent': UA,
-    Origin: WW,
-    Referer: WW + '/',
-    ...(cookie ? { Cookie: cookie } : {}),
-    ...(json ? { 'Content-Type': 'application/json' } : {}),
-  };
-}
-
-function absorbCookies(res, jar) {
-  const listed = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
-  for (const raw of listed) {
-    const pair = String(raw).split(';')[0];
-    const eq = pair.indexOf('=');
-    if (eq > 0) jar.set(pair.slice(0, eq).trim(), pair.slice(eq + 1).trim());
-  }
+  return data;
 }
 
 async function readJson(res) {

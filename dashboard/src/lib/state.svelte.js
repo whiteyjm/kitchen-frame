@@ -1,7 +1,7 @@
 // Shared app state and the pollers that fill it. Each feed polls only while something on screen
 // needs it (see start()), one request at a time, and unchanged results don't touch the screen.
 import { api, cached, remember, changed, forget, withKey } from './api.js';
-import { visibleNote } from '../../shared/product.js';
+import { visibleNote, splitQuantity, clampQty, groceryName } from '../../shared/product.js';
 import { dayKey, recipeTitle } from './format.js';
 import { demoCalendar, demoList, demoMeta } from './demo.js';
 import { ha, announce } from './ha.svelte.js';
@@ -245,7 +245,8 @@ export async function addItem(name, content, description) {
   const list = lists[name];
   const note = visibleNote(description);
   if (ui.demo) {
-    list.items = [...(list.items || []), { id: 'demo-' + Date.now(), content, ...(note ? { note } : {}) }];
+    const parsed = splitQuantity(content);
+    list.items = [...(list.items || []), { id: 'demo-' + Date.now(), content: parsed.name, quantity: parsed.quantity, ...(note ? { note } : {}) }];
     return true;
   }
   try {
@@ -263,7 +264,8 @@ export async function addItem(name, content, description) {
 export async function updateItem(name, item, content, description) {
   const list = lists[name];
   const note = visibleNote(description);
-  const next = { ...item, content };
+  const parsed = splitQuantity(content);
+  const next = { ...item, content: parsed.name, quantity: parsed.quantity };
   if (note) next.note = note;
   else delete next.note;
   const prev = list.items;
@@ -280,6 +282,30 @@ export async function updateItem(name, item, content, description) {
   } catch (err) {
     list.items = prev;
     list.error = 'Couldn’t update “' + item.content + '”: ' + err.message;
+    return false;
+  }
+}
+
+// Groceries only. One stays a bare title; two or more are "Name ×N" in Todoist.
+export async function setQuantity(name, item, quantity) {
+  const n = clampQty(quantity);
+  if (n == null) return false;
+  const list = lists[name];
+  const prev = list.items;
+  const nameOnly = groceryName(item);
+  list.items = (prev || []).map((i) => (i.id === item.id ? { ...i, content: nameOnly, quantity: n } : i));
+  if (ui.demo) return true;
+  try {
+    const saved = await api('/api/lists/' + name + '/' + encodeURIComponent(item.id), {
+      method: 'POST',
+      body: JSON.stringify({ quantity: n }),
+    });
+    list.items = list.items.map((i) => (i.id === item.id ? { ...i, ...saved } : i));
+    remember(name, list.items);
+    return true;
+  } catch (err) {
+    list.items = prev;
+    list.error = 'Couldn’t update “' + nameOnly + '”: ' + err.message;
     return false;
   }
 }
