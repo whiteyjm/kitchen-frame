@@ -142,6 +142,14 @@ background, with the key as `Authorization: Bearer` and `X-Webhook-Key`. The bod
 product lines and no dashboard key. When the URL is set, the Delivery tab says Grok Bot will
 fill the Coles trolley.
 
+Coles blocks the Worker’s own address. `relay/` on the kitchen laptop proxies catalogue
+GETs and registers a Cloudflare quick tunnel with `RELAY_KEY` (`npx wrangler secret put RELAY_KEY`,
+the same value as `relay/.env`). While the laptop has checked in within 10 minutes, searches
+go through it first and fall back to a direct fetch. A direct HTTP 403 skips direct calls
+for 15 minutes. Successful searches are cached for 24 hours and kept when a refresh fails.
+If a search fails and the laptop is offline, the picker says the laptop needs to be on.
+See `relay/install.ps1`.
+
 ## Messages from agents
 
 AI agents can post full-screen messages to the frame: see [docs/messages.md](docs/messages.md).

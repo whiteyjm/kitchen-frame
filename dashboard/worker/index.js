@@ -2,6 +2,7 @@
 //   GET  /api/calendar               merged iCal feeds (cron refreshes them into KV every 10 min)
 //   GET  /api/weather                Open-Meteo current + 5-day (see weather.js)
 //   GET  /api/groceries/search?q=    Coles product search (see groceries.js)
+//   POST /api/relay/register         laptop tunnel check-in (RELAY_KEY; see relay.js)
 //   GET  /api/delivery/basket        Coles delivery basket (KV delivery:basket; see delivery.js)
 //   PUT  /api/delivery/basket        replace that basket ({ items })
 //   POST /api/delivery/submit        snapshot the basket to delivery:order:pending (status pending)
@@ -29,12 +30,14 @@
 //   AGENT_TOKEN    lets AI agents post messages and save recipes; it can't read anything.
 //   ORDER_WEBHOOK_URL  optional. When set, a successful Coles submit POSTs a short notice here.
 //   ORDER_WEBHOOK_KEY  optional bearer sent with that notice (Authorization and X-Webhook-Key).
+//   RELAY_KEY      shared with the laptop relay. Unset = the register route stays closed.
 // Optional: DISPLAY_TZ  IANA zone for times with no TZID and no X-WR-TIMEZONE (default UTC).
 import { clampQty } from '../shared/product.js';
 import { expand, merge } from './calendar.js';
 import { getWeather } from './weather.js';
 import { LISTS, getList, addItem, updateItem, completeItem, setItemQuantity } from './todoist.js';
 import { searchGroceries } from './groceries.js';
+import { relayAuthorized, saveRelay, tunnelUrl } from './relay.js';
 import { handleDelivery } from './delivery.js';
 import { listPhotos, photoResponse } from './photos.js';
 import { room } from './messages.js';
@@ -67,6 +70,16 @@ export default {
       return room(env).fetch('https://room/post', { method: 'POST', body: await req.text() });
     }
     // Agents may also save recipes with their token (the frame saves with its own key).
+    // The laptop relay checks in with its own key. It cannot read the dashboard.
+    if (url.pathname === '/api/relay/register' && req.method === 'POST') {
+      if (!relayAuthorized(req, env)) return json({ error: 'unauthorized' }, 401);
+      if (!env.CALENDAR) return json({ error: 'KV unavailable' }, 503);
+      const body = await req.json().catch(() => null);
+      const origin = tunnelUrl(body && body.url);
+      if (!origin) return json({ error: 'url required' }, 400);
+      await saveRelay(env, origin);
+      return json({ ok: true });
+    }
     const agent = env.AGENT_TOKEN && req.headers.get('Authorization') === 'Bearer ' + env.AGENT_TOKEN;
     if (url.pathname === '/api/recipes' && req.method === 'POST' && agent) {
       const { status, body } = await saveRecipe(env, await req.json().catch(() => ({})));
@@ -114,6 +127,7 @@ export default {
           query: found.query,
           products: found.products,
           errors: found.errors,
+          relay: found.relay || { online: false, lastSeen: null },
           ...(found.unavailable ? { unavailable: true } : {}),
         });
       }

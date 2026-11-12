@@ -1,7 +1,9 @@
-import { test } from 'node:test';
+import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeWoolworths, normalizeColes, searchGroceries, cleanQuery, COLES_RESULTS } from './groceries.js';
+import { normalizeWoolworths, normalizeColes, searchGroceries, cleanQuery, COLES_RESULTS, resetColesCircuit } from './groceries.js';
 import { productTitle, productDescription, isProductNote, mergeProducts, withQuantity, splitQuantity, setDescriptionQuantity, colesSearchQueries } from '../shared/product.js';
+
+beforeEach(() => resetColesCircuit());
 
 const colesMilk = {
   _type: 'PRODUCT', id: 439693, name: 'Full Cream Milk', brand: 'Coles', size: '2L', availability: true,
@@ -124,7 +126,7 @@ test('an empty Coles answer is not cached, and a later good answer is', async ()
   const again = await searchGroceries(env, 'milk');
   assert.equal(again.products.length, 1);
   assert.equal(puts.length, 1);
-  assert.equal(puts[0][1].expirationTtl, 600);
+  assert.equal(puts[0][1].expirationTtl, 24 * 60 * 60);
 });
 
 test('a failed second page still returns the first page', async () => {
@@ -158,7 +160,7 @@ test('the website HTML is used when the BFF comes back empty', async () => {
   assert.equal(found.unavailable, undefined);
 });
 
-test('a coles result is cached in KV for 10 minutes', async () => {
+test('a coles result is cached in KV for 24 hours and kept when a refresh fails', async () => {
   let hits = 0;
   globalThis.fetch = async (url) => {
     assert.equal(String(url).includes('woolworths.com.au'), false);
@@ -179,10 +181,53 @@ test('a coles result is cached in KV for 10 minutes', async () => {
     },
   };
   const first = await searchGroceries(env, 'Milk');
-  const second = await searchGroceries(env, 'milk');
-  assert.equal(hits, 1);
   assert.equal(first.products[0].id, '439693');
-  assert.deepEqual(second.products, first.products);
   const colesPut = puts.find((p) => p[0].includes('groc:v2:coles:4166:'));
-  assert.equal(colesPut[1].expirationTtl, 600);
+  assert.equal(colesPut[1].expirationTtl, 24 * 60 * 60);
+  globalThis.fetch = async () => { hits++; throw new Error('down'); };
+  const second = await searchGroceries(env, 'milk');
+  assert.deepEqual(second.products, first.products);
+  assert.equal(second.unavailable, undefined);
+  assert.equal(puts.length, 1);
+});
+
+test('a fresh relay is used first and a direct 403 skips further direct calls', async () => {
+  const product = { _type: 'PRODUCT', id: 1, name: 'Milk', brand: 'Coles', size: '2L', availability: true, pricing: { now: 3 }, imageUris: [] };
+  const stored = new Map([['relay:home', JSON.stringify({ url: 'https://laptop.trycloudflare.com', lastSeen: new Date().toISOString() })]]);
+  const env = {
+    COLES_STORE_ID: '4513', RELAY_KEY: 'relay-secret',
+    CALENDAR: {
+      get: async (k, type) => {
+        const v = stored.get(k);
+        if (v == null) return null;
+        return type === 'json' ? JSON.parse(v) : v;
+      },
+      put: async (k, v, opts) => { stored.set(k, v); },
+    },
+  };
+  const hosts = [];
+  globalThis.fetch = async (url) => {
+    hosts.push(new URL(url).host);
+    return Response.json({ pageSize: 20, noOfResults: 1, results: [product] });
+  };
+  const viaRelay = await searchGroceries(env, 'milk');
+  assert.equal(viaRelay.products[0].name, 'Milk');
+  assert.equal(viaRelay.relay.online, true);
+  assert.deepEqual(hosts, ['laptop.trycloudflare.com']);
+
+  stored.delete('relay:home');
+  resetColesCircuit();
+  hosts.length = 0;
+  globalThis.fetch = async (url) => {
+    hosts.push(new URL(url).host);
+    return new Response('blocked', { status: 403, headers: { 'content-type': 'text/html' } });
+  };
+  const blocked = await searchGroceries(env, 'bread');
+  assert.equal(blocked.unavailable, true);
+  assert.equal(blocked.relay.online, false);
+  const calls = hosts.length;
+  assert.ok(calls > 0);
+  const again = await searchGroceries(env, 'eggs');
+  assert.equal(again.unavailable, true);
+  assert.equal(hosts.length, calls);
 });

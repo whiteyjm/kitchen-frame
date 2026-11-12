@@ -1,6 +1,7 @@
 import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import worker from './index.js';
+import { resetColesCircuit } from './groceries.js';
 import { shape } from './weather.js';
 import { MessageRoom } from './messages.js';
 
@@ -35,6 +36,7 @@ const tasks = {
   ],
 };
 beforeEach(() => {
+  resetColesCircuit();
   calls = [];
   globalThis.fetch = async (url, init = {}) => {
     const u = new URL(url);
@@ -320,6 +322,31 @@ test('calendar cron writes KV only when events change, or hourly', async () => {
   assert.equal(await run({ updated: ago(90), calendars: 1, errors: [], events: [] }), 1); // unchanged, hourly heartbeat
   assert.equal(await run({ updated: ago(5), calendars: 1, errors: [], events: [{ uid: 'gone' }] }), 1); // changed
   assert.equal(await run(null), 1); // first run
+});
+
+test('relay register stores only a quick-tunnel origin', async () => {
+  const store = new Map();
+  const kv = {
+    get: async (k, type) => {
+      const v = store.get(k);
+      if (v == null) return null;
+      return type === 'json' ? JSON.parse(v) : v;
+    },
+    put: async (k, v) => { store.set(k, v); },
+  };
+  const renv = { ...env, RELAY_KEY: 'relay-secret', CALENDAR: kv };
+  const post = (body, auth = 'Bearer relay-secret') => worker.fetch(new Request('https://frame.test/api/relay/register', {
+    method: 'POST',
+    headers: { Authorization: auth, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }), renv, { waitUntil() {} });
+  assert.equal((await post({ url: 'https://abc.trycloudflare.com' }, 'Bearer k')).status, 401);
+  assert.equal((await post({ url: 'http://abc.trycloudflare.com' })).status, 400);
+  assert.equal((await post({ url: 'https://evil.example' })).status, 400);
+  assert.equal((await post({ url: 'https://abc.trycloudflare.com/ignored' })).status, 200);
+  const saved = JSON.parse(store.get('relay:home'));
+  assert.equal(saved.url, 'https://abc.trycloudflare.com');
+  assert.ok(saved.lastSeen);
 });
 
 test('grocery search: key, short query, and a normalised Coles product', async () => {
