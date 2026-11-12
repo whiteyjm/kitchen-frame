@@ -1,6 +1,7 @@
 <script>
   import Icon from '../components/Icon.svelte';
   import ProductPicker from '../components/ProductPicker.svelte';
+  import wordmark from '../assets/coles-wordmark.svg';
   import { api } from '../lib/api.js';
   import { demoSearch } from '../lib/groceries.js';
   import { ui, lists, loadList } from '../lib/state.svelte.js';
@@ -262,6 +263,8 @@
 </script>
 
 <div class="wrap">
+  <!-- Faint store mark, only on this tab. The sheets sit above it so prices and names stay readable. -->
+  <img class="mark" src={wordmark} alt="" width="520" height="162" draggable="false" />
   <header class="bar">
     {#if adding}
       <form class="add" onsubmit={(e) => e.preventDefault()}>
@@ -346,7 +349,12 @@
 </div>
 
 <style>
-  .wrap { height: 100%; padding: 6px 28px 28px; display: flex; flex-direction: column; gap: 16px; }
+  .wrap { position: relative; height: 100%; padding: 6px 28px 28px; display: flex; flex-direction: column; gap: 16px; }
+  .mark {
+    position: absolute; left: 50%; top: 54%; z-index: 0; width: 520px; height: auto;
+    transform: translate(-50%, -50%); opacity: 0.25; pointer-events: none; user-select: none;
+  }
+  .wrap > :not(.mark) { position: relative; z-index: 1; }
   .bar { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 56px; padding: 0 6px; }
   h1 { margin: 0; display: flex; align-items: baseline; gap: 14px; font-size: 30px; font-weight: 700; letter-spacing: -.02em; }
   .count { font-size: 19px; font-weight: 500; color: var(--secondary); letter-spacing: 0; }
@@ -367,7 +375,7 @@
   .hint { margin: 18px 4px; font-size: 17px; color: var(--secondary); }
   .row { display: flex; align-items: center; gap: 12px; min-height: 92px; padding: 8px 0; border-bottom: 1px solid var(--sep); }
   .row:last-child { border-bottom: 0; }
-  img, .ph { flex: none; width: 72px; height: 72px; border-radius: 14px; background: var(--ground); object-fit: contain; }
+  .row img, .ph { flex: none; width: 72px; height: 72px; border-radius: 14px; background: var(--ground); object-fit: contain; }
   .ph { display: grid; place-items: center; color: var(--secondary); }
   .copy { flex: 1; min-width: 0; }
   .name { display: block; font-size: 21px; font-weight: 600; overflow: hidden; max-height: 2.5em; }
